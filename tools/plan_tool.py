@@ -21,16 +21,18 @@ from agent.skill_commands import build_plan_path
 _HEADING_RE = re.compile(r"^#+\s+")
 
 
-def _workspace_root() -> Path:
-    return Path.cwd()
+def _workspace_root(workspace_root: Optional[str | Path] = None) -> Path:
+    if workspace_root is None:
+        return Path.cwd()
+    return Path(workspace_root)
 
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
-def _plans_dir() -> Path:
-    path = _workspace_root() / ".hermes" / "plans"
+def _plans_dir(workspace_root: Optional[str | Path] = None) -> Path:
+    path = _workspace_root(workspace_root) / ".hermes" / "plans"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -117,6 +119,7 @@ def create_plan(
     tests: Optional[List[Any]] = None,
     risks: Optional[List[Any]] = None,
     content: Optional[str] = None,
+    workspace_root: Optional[str | Path] = None,
 ) -> Dict[str, Any]:
     """Create a markdown plan in ``.hermes/plans`` under the current workspace."""
     body = str(content or "").strip()
@@ -135,7 +138,7 @@ def create_plan(
         )
 
     relative_path = build_plan_path(task)
-    absolute_path = _workspace_root() / relative_path
+    absolute_path = _workspace_root(workspace_root) / relative_path
     _atomic_write(absolute_path, markdown)
     return {
         "success": True,
@@ -146,16 +149,20 @@ def create_plan(
     }
 
 
-def _resolve_plan_path(path: Optional[str], latest: bool = False) -> tuple[Optional[Path], Optional[str]]:
+def _resolve_plan_path(
+    path: Optional[str],
+    latest: bool = False,
+    workspace_root: Optional[str | Path] = None,
+) -> tuple[Optional[Path], Optional[str]]:
     if path:
         candidate = Path(path)
         if not candidate.is_absolute():
-            candidate = _workspace_root() / candidate
+            candidate = _workspace_root(workspace_root) / candidate
         try:
             resolved = candidate.resolve()
         except Exception:
             resolved = candidate
-        plans_dir = _plans_dir().resolve()
+        plans_dir = _plans_dir(workspace_root).resolve()
         try:
             resolved.relative_to(plans_dir)
         except ValueError:
@@ -165,7 +172,7 @@ def _resolve_plan_path(path: Optional[str], latest: bool = False) -> tuple[Optio
         return resolved, None
 
     if latest:
-        plans = sorted(_plans_dir().glob("*.md"))
+        plans = sorted(_plans_dir(workspace_root).glob("*.md"))
         if not plans:
             return None, "No plans exist in .hermes/plans."
         return plans[-1], None
@@ -173,15 +180,20 @@ def _resolve_plan_path(path: Optional[str], latest: bool = False) -> tuple[Optio
     return None, "Either path or latest=true is required."
 
 
-def read_plan(*, path: Optional[str] = None, latest: bool = False) -> Dict[str, Any]:
+def read_plan(
+    *,
+    path: Optional[str] = None,
+    latest: bool = False,
+    workspace_root: Optional[str | Path] = None,
+) -> Dict[str, Any]:
     """Read a plan from ``.hermes/plans``."""
-    resolved, error = _resolve_plan_path(path, latest=latest)
+    resolved, error = _resolve_plan_path(path, latest=latest, workspace_root=workspace_root)
     if error:
         return {"success": False, "error": error}
 
     content = resolved.read_text(encoding="utf-8")
     try:
-        rel = resolved.relative_to(_workspace_root())
+        rel = resolved.relative_to(_workspace_root(workspace_root))
     except ValueError:
         rel = resolved
 
@@ -200,9 +212,14 @@ def read_plan(*, path: Optional[str] = None, latest: bool = False) -> Dict[str, 
     }
 
 
-def update_plan(*, path: str, content: str) -> Dict[str, Any]:
+def update_plan(
+    *,
+    path: str,
+    content: str,
+    workspace_root: Optional[str | Path] = None,
+) -> Dict[str, Any]:
     """Replace the contents of an existing plan."""
-    resolved, error = _resolve_plan_path(path, latest=False)
+    resolved, error = _resolve_plan_path(path, latest=False, workspace_root=workspace_root)
     if error:
         return {"success": False, "error": error}
 
@@ -213,7 +230,7 @@ def update_plan(*, path: str, content: str) -> Dict[str, Any]:
     normalized = new_content + ("\n" if not new_content.endswith("\n") else "")
     _atomic_write(resolved, normalized)
     try:
-        rel = resolved.relative_to(_workspace_root())
+        rel = resolved.relative_to(_workspace_root(workspace_root))
     except ValueError:
         rel = resolved
     return {

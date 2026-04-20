@@ -46,6 +46,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Any
+from urllib.parse import unquote, urlparse
+from urllib.request import url2pathname
 
 logger = logging.getLogger("hermes.mcp_serve")
 
@@ -62,11 +64,12 @@ MCP_SERVER_INSTRUCTIONS = (
 
 _MCP_SERVER_AVAILABLE = False
 try:
-    from mcp.server.fastmcp import FastMCP
+    from mcp.server.fastmcp import Context, FastMCP
 
     _MCP_SERVER_AVAILABLE = True
 except ImportError:
     FastMCP = None  # type: ignore[assignment,misc]
+    Context = None  # type: ignore[assignment,misc]
 
 
 # ---------------------------------------------------------------------------
@@ -199,6 +202,52 @@ def _clamp(value: int, *, default: int, minimum: int, maximum: int) -> int:
 def _bounded_excerpt(value: Any, limit: int) -> str:
     text = "" if value is None else str(value)
     return text if len(text) <= limit else text[:limit]
+
+
+def _file_url_to_path(uri: str) -> Optional[Path]:
+    parsed = urlparse(str(uri or ""))
+    if parsed.scheme and parsed.scheme != "file":
+        return None
+    if parsed.scheme != "file":
+        return Path(str(uri))
+
+    path = url2pathname(unquote(parsed.path or ""))
+    if parsed.netloc and parsed.netloc not in ("", "localhost"):
+        if os.name == "nt":
+            path = f"//{parsed.netloc}{path}"
+        else:
+            path = f"/{parsed.netloc}{path}"
+    if not path:
+        return None
+    return Path(path)
+
+
+async def _resolve_workspace_root(ctx: Optional["Context"] = None) -> Path:
+    """Prefer MCP client roots; fall back to the server process cwd."""
+    fallback = Path.cwd()
+    if ctx is None:
+        return fallback
+
+    session = getattr(ctx, "session", None)
+    list_roots = getattr(session, "list_roots", None)
+    if list_roots is None:
+        return fallback
+
+    try:
+        roots_result = await list_roots()
+    except Exception as exc:
+        logger.debug("Failed to list client roots, falling back to cwd: %s", exc)
+        return fallback
+
+    for root in getattr(roots_result, "roots", []) or []:
+        candidate = _file_url_to_path(str(getattr(root, "uri", "") or ""))
+        if not candidate:
+            continue
+        if candidate.exists() and candidate.is_file():
+            return candidate.parent
+        return candidate
+
+    return fallback
 
 
 def _deterministic_session_recall_search(
@@ -1093,8 +1142,8 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
             hints = [
                 "可使用 skill_view_safe(name=...) 查看候选技能的完整内容。",
                 "可使用 session_recall_search(query=...) 做更聚焦的后续会话回忆检索。",
-                "如需按 Hermes 原生 /plan 风格规划，可先调用 plan_skill_read()。",
-                "确定方案后调用 plan(...)；任务完成后考虑调用 memory_write(...) 或 skill_create_or_patch(...)。",
+                "开始规划前，先调用 plan_skill_read()， 读取 /plan skill。",
+                "形成明确方案后调用 plan(...)落盘；落盘；任务完成后仅在内容可复用时再考虑调用 memory_write(...) 或 skill_create_or_patch(...)。",
             ]
 
             bundle = {
@@ -1113,10 +1162,11 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
     # -- init --------------------------------------------------------------
 
     @mcp.tool()
-    def init(
+    async def init(
         project_name: Optional[str] = None,
         path: Optional[str] = None,
         overwrite: bool = False,
+        ctx: Optional["Context"] = None,
     ) -> str:
         """初始化 Trae 项目规则文件，强制其遵守 Hermes MCP 工作流。
 
@@ -1129,10 +1179,12 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
         try:
             from tools.trae_rules_tool import init_trae_project_rules
 
+            workspace_root = await _resolve_workspace_root(ctx)
             result = init_trae_project_rules(
                 project_name=project_name,
                 path=path,
                 overwrite=overwrite,
+                workspace_root=workspace_root,
             )
             return json.dumps(result, indent=2, ensure_ascii=False)
         except Exception as e:
@@ -1152,7 +1204,7 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
             return _structured_error(f"Failed to read bundled plan skill: {e}")
 
     @mcp.tool()
-    def plan(
+    async def plan(
         task: str,
         goal: Optional[str] = None,
         context: Optional[List[str]] = None,
@@ -1162,6 +1214,7 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
         tests: Optional[List[str]] = None,
         risks: Optional[List[str]] = None,
         content: Optional[str] = None,
+        ctx: Optional["Context"] = None,
     ) -> str:
         """在当前工作区的 .hermes/plans 下创建 markdown plan。
 
@@ -1171,6 +1224,7 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
         try:
             from tools.plan_tool import create_plan
 
+            workspace_root = await _resolve_workspace_root(ctx)
             result = create_plan(
                 task=task,
                 goal=goal,
@@ -1181,6 +1235,7 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
                 tests=tests,
                 risks=risks,
                 content=content,
+                workspace_root=workspace_root,
             )
             return json.dumps(result, indent=2, ensure_ascii=False)
         except Exception as e:
@@ -1189,15 +1244,17 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
     # -- plan_read ---------------------------------------------------------
 
     @mcp.tool()
-    def plan_read(
+    async def plan_read(
         path: Optional[str] = None,
         latest: bool = False,
+        ctx: Optional["Context"] = None,
     ) -> str:
         """读取当前工作区 .hermes/plans 下的某个计划文件。"""
         try:
             from tools.plan_tool import read_plan
 
-            result = read_plan(path=path, latest=latest)
+            workspace_root = await _resolve_workspace_root(ctx)
+            result = read_plan(path=path, latest=latest, workspace_root=workspace_root)
             return json.dumps(result, indent=2, ensure_ascii=False)
         except Exception as e:
             return _structured_error(f"Failed to read plan: {e}")
@@ -1205,15 +1262,17 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
     # -- plan_update -------------------------------------------------------
 
     @mcp.tool()
-    def plan_update(
+    async def plan_update(
         path: str,
         content: str,
+        ctx: Optional["Context"] = None,
     ) -> str:
         """覆盖更新一个已有计划文件的完整内容。"""
         try:
             from tools.plan_tool import update_plan
 
-            result = update_plan(path=path, content=content)
+            workspace_root = await _resolve_workspace_root(ctx)
+            result = update_plan(path=path, content=content, workspace_root=workspace_root)
             return json.dumps(result, indent=2, ensure_ascii=False)
         except Exception as e:
             return _structured_error(f"Failed to update plan: {e}")

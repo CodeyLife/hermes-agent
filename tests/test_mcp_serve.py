@@ -15,9 +15,11 @@ import sqlite3
 import time
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from mcp import types
 
 
 # ---------------------------------------------------------------------------
@@ -536,12 +538,21 @@ def mcp_server_e2e(populated_sessions_dir, mock_session_db, monkeypatch):
     return server, bridge
 
 
-def _run_tool(server, name, args=None):
+def _run_tool(server, name, args=None, context=None):
     """Call an MCP tool through FastMCP's tool manager and return parsed JSON."""
     result = asyncio.get_event_loop().run_until_complete(
-        server._tool_manager.call_tool(name, args or {})
+        server._tool_manager.call_tool(name, args or {}, context=context)
     )
     return json.loads(result) if isinstance(result, str) else result
+
+
+def _context_with_roots(*roots: Path):
+    async def _list_roots():
+        return types.ListRootsResult(
+            roots=[types.Root(uri=root.resolve().as_uri(), name=root.name) for root in roots]
+        )
+
+    return SimpleNamespace(session=SimpleNamespace(list_roots=_list_roots))
 
 
 @pytest.fixture
@@ -1064,6 +1075,26 @@ class TestE2ELearningTools:
         assert rule_file.exists()
         assert "plan_skill_read()" in rule_file.read_text(encoding="utf-8")
 
+    def test_init_prefers_client_root_over_server_cwd(self, mcp_server_e2e, _event_loop, tmp_path, monkeypatch):
+        server, _ = mcp_server_e2e
+        server_repo_dir = tmp_path / "server-repo"
+        client_project_dir = tmp_path / "client-project"
+        server_repo_dir.mkdir()
+        client_project_dir.mkdir()
+        monkeypatch.chdir(server_repo_dir)
+
+        result = _run_tool(
+            server,
+            "init",
+            {"project_name": "Client Project", "overwrite": True},
+            context=_context_with_roots(client_project_dir),
+        )
+
+        expected = client_project_dir / ".trae" / "rules" / "hermes-mcp-workflow.md"
+        assert Path(result["absolute_path"]) == expected
+        assert expected.exists()
+        assert not (server_repo_dir / ".trae" / "rules" / "hermes-mcp-workflow.md").exists()
+
     def test_plan_read_update(self, mcp_server_e2e, _event_loop):
         server, _ = mcp_server_e2e
         guide = _run_tool(server, "plan_skill_read")
@@ -1106,6 +1137,39 @@ class TestE2ELearningTools:
         latest = _run_tool(server, "plan_read", {"latest": True})
         assert latest["success"] is True
         assert latest["content"].startswith("# Updated plan")
+
+    def test_plan_tools_prefer_client_root_over_server_cwd(self, mcp_server_e2e, _event_loop, tmp_path, monkeypatch):
+        server, _ = mcp_server_e2e
+        server_repo_dir = tmp_path / "server-repo"
+        client_project_dir = tmp_path / "client-project"
+        server_repo_dir.mkdir()
+        client_project_dir.mkdir()
+        monkeypatch.chdir(server_repo_dir)
+        ctx = _context_with_roots(client_project_dir)
+
+        created = _run_tool(
+            server,
+            "plan",
+            {"task": "Client rooted plan", "steps": ["Use client root"]},
+            context=ctx,
+        )
+        expected_dir = client_project_dir / ".hermes" / "plans"
+        assert Path(created["absolute_path"]).parent == expected_dir
+        assert expected_dir.exists()
+        assert not (server_repo_dir / ".hermes" / "plans").exists()
+
+        read_back = _run_tool(server, "plan_read", {"path": created["path"]}, context=ctx)
+        assert read_back["success"] is True
+        assert read_back["absolute_path"] == created["absolute_path"]
+
+        updated = _run_tool(
+            server,
+            "plan_update",
+            {"path": created["path"], "content": "# Client rooted plan\n"},
+            context=ctx,
+        )
+        assert updated["success"] is True
+        assert Path(updated["absolute_path"]) == Path(created["absolute_path"])
 
 
 # ---------------------------------------------------------------------------
