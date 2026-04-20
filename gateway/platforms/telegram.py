@@ -13,9 +13,17 @@ import logging
 import os
 import html as _html
 import re
+from functools import lru_cache
 from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger(__name__)
+
+
+@lru_cache(maxsize=32)
+def _compile_bot_mention_regex(bot_username: str) -> "re.Pattern[str]":
+    """Compile the word-boundary `@<username>` regex once per username."""
+    return re.compile(rf"(?<!\w)@{re.escape(bot_username)}(?!\w)", re.IGNORECASE)
+
 
 try:
     from telegram import Update, Bot, Message, InlineKeyboardButton, InlineKeyboardMarkup
@@ -2261,10 +2269,11 @@ class TelegramAdapter(BasePlatformAdapter):
             yield getattr(message, "text", None) or "", getattr(message, "entities", None) or []
             yield getattr(message, "caption", None) or "", getattr(message, "caption_entities", None) or []
 
+        mention_re = _compile_bot_mention_regex(bot_username) if bot_username else None
+
         for source_text, entities in _iter_sources():
-            if bot_username:
-                if re.search(rf'(?<!\w)@{re.escape(bot_username)}(?!\w)', source_text, re.IGNORECASE):
-                    return True
+            if mention_re and mention_re.search(source_text):
+                return True
             for entity in entities:
                 entity_type = str(getattr(entity, "type", "")).split(".")[-1].lower()
                 if entity_type == "mention" and bot_username:
