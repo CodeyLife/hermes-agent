@@ -16,7 +16,8 @@ Hermes MCP Server：暴露消息会话与本地学习资产。
   channels_list
   memory_read, memory_write, session_recall_search
   skills_list, skill_view_safe, skill_create_or_patch
-  task_context_bundle
+  task_context_bundle, init
+  plan_skill_read, plan, plan_read, plan_update
 
 用法：
     hermes mcp serve
@@ -51,7 +52,8 @@ logger = logging.getLogger("hermes.mcp_serve")
 MCP_SERVER_INSTRUCTIONS = (
     "Hermes Agent 的 MCP 桥接服务。可使用这些工具跨消息平台访问会话，"
     "并读取 Hermes 的本地学习资产，例如内置记忆、确定性会话回忆和当前"
-    "profile 的本地技能。"
+    "profile 的本地技能。还可初始化 Trae 项目规则、读取 Hermes 内置 /plan skill，"
+    "并在当前工作区维护 plan 产物，支撑 Trae 等客户端的轻量 planner-executor 工作流。"
 )
 
 # ---------------------------------------------------------------------------
@@ -126,6 +128,9 @@ def _load_channel_directory() -> dict:
         logger.debug("Failed to load channel_directory.json: %s", e)
         return {}
 
+
+MCP_SEND_MESSAGE_MAX_LENGTH = 4096
+MCP_MEMORY_CONTENT_MAX_LENGTH = 5000
 
 def _extract_message_content(msg: dict) -> str:
     """Extract text content from a message, handling multi-part content."""
@@ -266,6 +271,7 @@ def _deterministic_session_recall_search(
 
 QUEUE_LIMIT = 1000
 POLL_INTERVAL = 0.2  # seconds between DB polls (200ms)
+APPROVAL_EXPIRY_SECONDS = 300  # 5 minutes
 
 
 @dataclass
@@ -369,9 +375,22 @@ class EventBridge:
 
         return None
 
+    def _expire_old_approvals(self) -> None:
+        """Remove approvals that have exceeded the expiry timeout."""
+        cutoff = time.monotonic() - APPROVAL_EXPIRY_SECONDS
+        expired_keys = [
+            key for key, approval in self._pending_approvals.items()
+            if approval.get("_monotonic_created", cutoff) < cutoff
+        ]
+        for key in expired_keys:
+            del self._pending_approvals[key]
+        if expired_keys:
+            logger.debug("Expired %d approval(s)", len(expired_keys))
+
     def list_pending_approvals(self) -> List[dict]:
         """List approval requests observed during this bridge session."""
         with self._lock:
+            self._expire_old_approvals()
             return sorted(
                 self._pending_approvals.values(),
                 key=lambda a: a.get("created_at", ""),
@@ -380,10 +399,11 @@ class EventBridge:
     def respond_to_approval(self, approval_id: str, decision: str) -> dict:
         """Resolve a pending approval (best-effort without gateway IPC)."""
         with self._lock:
+            self._expire_old_approvals()
             approval = self._pending_approvals.pop(approval_id, None)
 
         if not approval:
-            return {"error": f"Approval not found: {approval_id}"}
+            return _structured_error(f"Approval not found: {approval_id}")
 
         self._enqueue(QueueEvent(
             cursor=0,  # Will be set by _enqueue
@@ -403,6 +423,14 @@ class EventBridge:
             # Trim queue to limit
             while len(self._queue) > QUEUE_LIMIT:
                 self._queue.pop(0)
+
+            # Track approval_requested events for permissions_list_open
+            if event.type == "approval_requested":
+                approval_id = event.data.get("id", f"auto_{event.cursor}")
+                approval_data = {**event.data, "id": approval_id}
+                approval_data["_monotonic_created"] = time.monotonic()
+                self._pending_approvals[approval_id] = approval_data
+
         self._new_event.set()
 
     def _poll_loop(self):
@@ -607,7 +635,7 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
         entry = entries.get(session_key)
 
         if not entry:
-            return json.dumps({"error": f"Conversation not found: {session_key}"})
+            return _structured_error(f"Conversation not found: {session_key}")
 
         origin = entry.get("origin", {})
         return json.dumps({
@@ -645,20 +673,20 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
         entries = _load_sessions_index()
         entry = entries.get(session_key)
         if not entry:
-            return json.dumps({"error": f"Conversation not found: {session_key}"})
+            return _structured_error(f"Conversation not found: {session_key}")
 
         session_id = entry.get("session_id", "")
         if not session_id:
-            return json.dumps({"error": "No session ID for this conversation"})
+            return _structured_error("No session ID for this conversation")
 
         db = _get_session_db()
         if not db:
-            return json.dumps({"error": "Session database unavailable"})
+            return _structured_error("Session database unavailable")
 
         try:
             all_messages = db.get_messages(session_id)
         except Exception as e:
-            return json.dumps({"error": f"Failed to read messages: {e}"})
+            return _structured_error(f"Failed to read messages: {e}")
 
         filtered = []
         for msg in all_messages:
@@ -700,20 +728,20 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
         entries = _load_sessions_index()
         entry = entries.get(session_key)
         if not entry:
-            return json.dumps({"error": f"Conversation not found: {session_key}"})
+            return _structured_error(f"Conversation not found: {session_key}")
 
         session_id = entry.get("session_id", "")
         if not session_id:
-            return json.dumps({"error": "No session ID for this conversation"})
+            return _structured_error("No session ID for this conversation")
 
         db = _get_session_db()
         if not db:
-            return json.dumps({"error": "Session database unavailable"})
+            return _structured_error("Session database unavailable")
 
         try:
             all_messages = db.get_messages(session_id)
         except Exception as e:
-            return json.dumps({"error": f"Failed to read messages: {e}"})
+            return _structured_error(f"Failed to read messages: {e}")
 
         # Find the target message
         target_msg = None
@@ -723,7 +751,7 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
                 break
 
         if not target_msg:
-            return json.dumps({"error": f"Message not found: {message_id}"})
+            return _structured_error(f"Message not found: {message_id}")
 
         attachments = _extract_attachments(target_msg)
 
@@ -809,7 +837,18 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
             message: 要发送的消息文本
         """
         if not target or not message:
-            return json.dumps({"error": "Both target and message are required"})
+            return _structured_error("Both target and message are required")
+
+        if ":" not in target:
+            return _structured_error(
+                f"target must be in 'platform:identifier' format (e.g. 'telegram:6308981865'), got: {target}"
+            )
+
+        if len(message) > MCP_SEND_MESSAGE_MAX_LENGTH:
+            return _structured_error(
+                f"message exceeds {MCP_SEND_MESSAGE_MAX_LENGTH} character limit "
+                f"({len(message)} characters)"
+            )
 
         try:
             from tools.send_message_tool import send_message_tool
@@ -818,9 +857,9 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
             )
             return result_str
         except ImportError:
-            return json.dumps({"error": "Send message tool not available"})
+            return _structured_error("Send message tool not available")
         except Exception as e:
-            return json.dumps({"error": f"Send failed: {e}"})
+            return _structured_error(f"Send failed: {e}")
 
     # -- channels_list -----------------------------------------------------
 
@@ -904,6 +943,23 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
         if action not in ("add", "replace"):
             return _structured_error(
                 f"Unsupported action '{action}' for memory_write. Use add or replace."
+            )
+
+        if not target:
+            return _structured_error("target is required and cannot be empty")
+
+        if not content:
+            return _structured_error("content is required and cannot be empty")
+
+        if len(content) > MCP_MEMORY_CONTENT_MAX_LENGTH:
+            return _structured_error(
+                f"content exceeds {MCP_MEMORY_CONTENT_MAX_LENGTH} character limit "
+                f"({len(content)} characters)"
+            )
+
+        if action == "replace" and not old_text:
+            return _structured_error(
+                "old_text is required when action is 'replace'"
             )
 
         try:
@@ -1037,6 +1093,8 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
             hints = [
                 "可使用 skill_view_safe(name=...) 查看候选技能的完整内容。",
                 "可使用 session_recall_search(query=...) 做更聚焦的后续会话回忆检索。",
+                "如需按 Hermes 原生 /plan 风格规划，可先调用 plan_skill_read()。",
+                "确定方案后调用 plan(...)；任务完成后考虑调用 memory_write(...) 或 skill_create_or_patch(...)。",
             ]
 
             bundle = {
@@ -1051,6 +1109,114 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
             return json.dumps(bundle, indent=2, ensure_ascii=False)
         except Exception as e:
             return _structured_error(f"Failed to build task context bundle: {e}")
+
+    # -- init --------------------------------------------------------------
+
+    @mcp.tool()
+    def init(
+        project_name: Optional[str] = None,
+        path: Optional[str] = None,
+        overwrite: bool = False,
+    ) -> str:
+        """初始化 Trae 项目规则文件，强制其遵守 Hermes MCP 工作流。
+
+        默认写入 `.trae/rules/hermes-mcp-workflow.md`。规则会要求 Trae：
+        - 复杂任务先做 Hermes 检索
+        - 必要时读取 plan skill
+        - 计划完成后写入 plan
+        - 任务完成后检查 memory_write / skill_create_or_patch
+        """
+        try:
+            from tools.trae_rules_tool import init_trae_project_rules
+
+            result = init_trae_project_rules(
+                project_name=project_name,
+                path=path,
+                overwrite=overwrite,
+            )
+            return json.dumps(result, indent=2, ensure_ascii=False)
+        except Exception as e:
+            return _structured_error(f"Failed to initialize Trae project rules: {e}")
+
+    # -- plan -------------------------------------------------------
+
+    @mcp.tool()
+    def plan_skill_read() -> str:
+        """读取 Hermes 仓库内置的 /plan skill 原文，供 Trae 规划时参考。"""
+        try:
+            from tools.plan_tool import read_bundled_plan_skill
+
+            result = read_bundled_plan_skill()
+            return json.dumps(result, indent=2, ensure_ascii=False)
+        except Exception as e:
+            return _structured_error(f"Failed to read bundled plan skill: {e}")
+
+    @mcp.tool()
+    def plan(
+        task: str,
+        goal: Optional[str] = None,
+        context: Optional[List[str]] = None,
+        approach: Optional[List[str]] = None,
+        steps: Optional[List[str]] = None,
+        files: Optional[List[str]] = None,
+        tests: Optional[List[str]] = None,
+        risks: Optional[List[str]] = None,
+        content: Optional[str] = None,
+    ) -> str:
+        """在当前工作区的 .hermes/plans 下创建 markdown plan。
+
+        该工具是确定性的计划产物存储层，不会调用 Hermes 自身的 LLM 或 /plan 技能。
+        建议由 Trae 先自行规划，再将最终计划写入该工具。
+        """
+        try:
+            from tools.plan_tool import create_plan
+
+            result = create_plan(
+                task=task,
+                goal=goal,
+                context=context,
+                approach=approach,
+                steps=steps,
+                files=files,
+                tests=tests,
+                risks=risks,
+                content=content,
+            )
+            return json.dumps(result, indent=2, ensure_ascii=False)
+        except Exception as e:
+            return _structured_error(f"Failed to create plan: {e}")
+
+    # -- plan_read ---------------------------------------------------------
+
+    @mcp.tool()
+    def plan_read(
+        path: Optional[str] = None,
+        latest: bool = False,
+    ) -> str:
+        """读取当前工作区 .hermes/plans 下的某个计划文件。"""
+        try:
+            from tools.plan_tool import read_plan
+
+            result = read_plan(path=path, latest=latest)
+            return json.dumps(result, indent=2, ensure_ascii=False)
+        except Exception as e:
+            return _structured_error(f"Failed to read plan: {e}")
+
+    # -- plan_update -------------------------------------------------------
+
+    @mcp.tool()
+    def plan_update(
+        path: str,
+        content: str,
+    ) -> str:
+        """覆盖更新一个已有计划文件的完整内容。"""
+        try:
+            from tools.plan_tool import update_plan
+
+            result = update_plan(path=path, content=content)
+            return json.dumps(result, indent=2, ensure_ascii=False)
+        except Exception as e:
+            return _structured_error(f"Failed to update plan: {e}")
 
     # -- permissions_list_open ---------------------------------------------
 
@@ -1081,10 +1247,10 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
             decision: "allow-once"、"allow-always" 或 "deny"
         """
         if decision not in ("allow-once", "allow-always", "deny"):
-            return json.dumps({
-                "error": f"Invalid decision: {decision}. "
-                         f"Must be allow-once, allow-always, or deny"
-            })
+            return _structured_error(
+                f"Invalid decision: {decision}. "
+                f"Must be allow-once, allow-always, or deny"
+            )
 
         result = bridge.respond_to_approval(id, decision)
         return json.dumps(result, indent=2)

@@ -893,7 +893,8 @@ class TestToolRegistration:
             "permissions_list_open", "permissions_respond",
             "memory_read", "memory_write", "session_recall_search",
             "skills_list", "skill_view_safe", "skill_create_or_patch",
-            "task_context_bundle",
+            "task_context_bundle", "init",
+            "plan_skill_read", "plan", "plan_read", "plan_update",
         }
         assert expected == tool_names, f"Missing: {expected - tool_names}, Extra: {tool_names - expected}"
 
@@ -905,10 +906,10 @@ class TestToolRegistration:
     def test_server_instructions_cover_learning_and_messaging(self, mcp_server_e2e, _event_loop):
         server, _ = mcp_server_e2e
         text = server.instructions.lower()
-        assert "messaging" in text
-        assert "memory" in text
-        assert "skills" in text
-        assert "session recall" in text
+        assert "记忆" in text
+        assert "技能" in text
+        assert "plan" in text
+        assert "/plan" in text
 
 
 class TestE2ELearningTools:
@@ -1040,9 +1041,71 @@ class TestE2ELearningTools:
         assert len(result["skill_candidates"]) <= 5
         assert all("content" not in skill for skill in result["skill_candidates"])
         assert result["hints"] == [
-            "Use skill_view_safe(name=...) to inspect a candidate skill in full.",
-            "Use session_recall_search(query=...) for a focused follow-up recall search.",
+            "可使用 skill_view_safe(name=...) 查看候选技能的完整内容。",
+            "可使用 session_recall_search(query=...) 做更聚焦的后续会话回忆检索。",
+            "如需按 Hermes 原生 /plan 风格规划，可先调用 plan_skill_read()。",
+            "确定方案后调用 plan(...)；任务完成后考虑调用 memory_write(...) 或 skill_create_or_patch(...)。",
         ]
+
+    def test_init_writes_trae_project_rules(self, mcp_server_e2e, _event_loop):
+        server, _ = mcp_server_e2e
+        result = _run_tool(server, "init", {"project_name": "Hermes FastMCP", "overwrite": True})
+        assert result["success"] is True
+        assert result["created"] is True
+        assert result["path"] == ".trae/rules/hermes-mcp-workflow.md"
+        assert "task_context_bundle(...)" in result["content"]
+        assert "memory_write(...)" in result["content"]
+        assert "skill_create_or_patch(...)" in result["content"]
+        assert "必须" in result["content"]
+        assert "默认不写入记忆或技能" in result["content"]
+        assert len(result["content"]) <= 1000
+
+        rule_file = Path(result["absolute_path"])
+        assert rule_file.exists()
+        assert "plan_skill_read()" in rule_file.read_text(encoding="utf-8")
+
+    def test_plan_read_update(self, mcp_server_e2e, _event_loop):
+        server, _ = mcp_server_e2e
+        guide = _run_tool(server, "plan_skill_read")
+        assert guide["success"] is True
+        assert guide["name"] == "plan"
+        assert "# Plan Mode" in guide["content"]
+
+        created = _run_tool(
+            server,
+            "plan",
+            {
+                "task": "Add FastMCP planner executor workflow",
+                "goal": "Expose lightweight planning guidance and plan tools.",
+                "steps": [
+                    "Inspect current FastMCP surfaces",
+                    "Add plan storage helpers",
+                    "Simplify Trae workflow guidance",
+                ],
+                "files": ["mcp_serve.py", "tools/plan_tool.py", "TRAE_MCP_SYSTEM_PROMPT_CN.md"],
+                "tests": ["scripts/run_tests.sh tests/test_mcp_serve.py"],
+            },
+        )
+        assert created["success"] is True
+        assert created["path"].startswith(".hermes/plans/")
+
+        read_back = _run_tool(server, "plan_read", {"path": created["path"]})
+        assert read_back["success"] is True
+        assert "Add FastMCP planner executor workflow" in read_back["content"]
+
+        updated = _run_tool(
+            server,
+            "plan_update",
+            {
+                "path": created["path"],
+                "content": "# Updated plan\n\n## Step-by-step plan\n\n- Do the thing\n",
+            },
+        )
+        assert updated["success"] is True
+
+        latest = _run_tool(server, "plan_read", {"latest": True})
+        assert latest["success"] is True
+        assert latest["content"].startswith("# Updated plan")
 
 
 # ---------------------------------------------------------------------------
@@ -1066,7 +1129,7 @@ class TestServerCreation:
     def test_create_without_mcp_sdk(self, monkeypatch):
         import mcp_serve
         monkeypatch.setattr(mcp_serve, "_MCP_SERVER_AVAILABLE", False)
-        with pytest.raises(ImportError, match="MCP server requires"):
+        with pytest.raises(ImportError, match="MCP 服务端依赖"):
             mcp_serve.create_mcp_server()
 
 

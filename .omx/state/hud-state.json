@@ -1,6 +1,0 @@
-{
-  "last_turn_at": "2026-04-20T07:24:09.240Z",
-  "turn_count": 1,
-  "last_progress_at": "2026-04-20T07:24:09.240Z",
-  "last_agent_output": "已将 [mcp_serve.py](D:\\GithubProject\\hermes-agent\\mcp_serve.py) 里的对外描述文本改为中文，主要包括模块头部说明、`FastMCP` 的 `i"
-}
