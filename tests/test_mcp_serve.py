@@ -36,6 +36,59 @@ def _isolate_hermes_home(tmp_path, monkeypatch):
     return tmp_path
 
 
+@pytest.fixture(autouse=True)
+def _seed_learning_assets(tmp_path, monkeypatch):
+    memories = tmp_path / "memories"
+    memories.mkdir(parents=True, exist_ok=True)
+    (memories / "MEMORY.md").write_text(
+        "project uses pytest\n§\nfastmcp server already exists\n§\nremember to avoid llm recall",
+        encoding="utf-8",
+    )
+    (memories / "USER.md").write_text(
+        "user codes in Trae\n§\nprefers Hermes to be tool-only",
+        encoding="utf-8",
+    )
+
+    skills = tmp_path / "skills"
+    (skills / "python" / "fastmcp-helper").mkdir(parents=True, exist_ok=True)
+    (skills / "python" / "fastmcp-helper" / "SKILL.md").write_text(
+        """\
+---
+name: fastmcp-helper
+description: Help with FastMCP integration work.
+metadata:
+  hermes:
+    tags: [mcp, fastmcp]
+---
+
+# FastMCP Helper
+
+Use FastMCP carefully.
+""",
+        encoding="utf-8",
+    )
+    (skills / "python" / "fastmcp-helper" / "references").mkdir(parents=True, exist_ok=True)
+    (skills / "python" / "fastmcp-helper" / "references" / "api.md").write_text(
+        "# API\nUse references safely.",
+        encoding="utf-8",
+    )
+    (skills / "python" / "fastmcp-helper" / "scripts").mkdir(parents=True, exist_ok=True)
+    (skills / "python" / "fastmcp-helper" / "scripts" / "unsafe.py").write_text(
+        "print('nope')",
+        encoding="utf-8",
+    )
+    try:
+        import tools.skills_tool as skills_tool_module
+        monkeypatch.setattr(skills_tool_module, "SKILLS_DIR", skills)
+    except Exception:
+        pass
+    try:
+        import tools.skill_manager_tool as skill_manager_tool_module
+        monkeypatch.setattr(skill_manager_tool_module, "SKILLS_DIR", skills)
+    except Exception:
+        pass
+
+
 @pytest.fixture
 def sessions_dir(tmp_path):
     sdir = tmp_path / "sessions"
@@ -203,6 +256,37 @@ def mock_session_db(tmp_path, populated_sessions_dir):
                     d["tool_calls"] = json.loads(d["tool_calls"])
                 result.append(d)
             return result
+
+        def search_messages(self, query, limit=20, offset=0, **kwargs):
+            conn = sqlite3.connect(str(self._db_path))
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT m.id, m.session_id, m.role, m.content, m.timestamp, s.source "
+                "FROM messages m JOIN sessions s ON s.id = m.session_id "
+                "WHERE instr(lower(m.content), lower(?)) > 0 "
+                "ORDER BY m.id LIMIT ? OFFSET ?",
+                (query, limit, offset),
+            ).fetchall()
+            conn.close()
+            results = []
+            for row in rows:
+                content = row["content"] or ""
+                idx = content.lower().find(query.lower())
+                if idx < 0:
+                    idx = 0
+                snippet = content[max(0, idx - 20): idx + 80]
+                results.append(
+                    {
+                        "id": row["id"],
+                        "session_id": row["session_id"],
+                        "role": row["role"],
+                        "snippet": snippet,
+                        "timestamp": row["timestamp"],
+                        "source": row["source"],
+                        "context": [{"role": row["role"], "content": content[:120]}],
+                    }
+                )
+            return results
 
     return TestSessionDB()
 
@@ -807,6 +891,9 @@ class TestToolRegistration:
             "attachments_fetch", "events_poll", "events_wait",
             "messages_send", "channels_list",
             "permissions_list_open", "permissions_respond",
+            "memory_read", "memory_write", "session_recall_search",
+            "skills_list", "skill_view_safe", "skill_create_or_patch",
+            "task_context_bundle",
         }
         assert expected == tool_names, f"Missing: {expected - tool_names}, Extra: {tool_names - expected}"
 
@@ -814,6 +901,148 @@ class TestToolRegistration:
         server, _ = mcp_server_e2e
         for tool in server._tool_manager.list_tools():
             assert tool.description, f"Tool {tool.name} has no description"
+
+    def test_server_instructions_cover_learning_and_messaging(self, mcp_server_e2e, _event_loop):
+        server, _ = mcp_server_e2e
+        text = server.instructions.lower()
+        assert "messaging" in text
+        assert "memory" in text
+        assert "skills" in text
+        assert "session recall" in text
+
+
+class TestE2ELearningTools:
+    def test_memory_read(self, mcp_server_e2e, _event_loop):
+        server, _ = mcp_server_e2e
+        result = _run_tool(server, "memory_read")
+        assert result["memory_count"] == 3
+        assert result["user_count"] == 2
+        assert "project uses pytest" in result["memory"]
+
+    def test_memory_write_add_and_replace(self, mcp_server_e2e, _event_loop):
+        server, _ = mcp_server_e2e
+        add_result = _run_tool(
+            server,
+            "memory_write",
+            {"action": "add", "target": "memory", "content": "new durable fact"},
+        )
+        assert add_result["success"] is True
+        assert "new durable fact" in add_result["entries"]
+
+        replace_result = _run_tool(
+            server,
+            "memory_write",
+            {
+                "action": "replace",
+                "target": "memory",
+                "old_text": "new durable fact",
+                "content": "updated durable fact",
+            },
+        )
+        assert replace_result["success"] is True
+        assert "updated durable fact" in replace_result["entries"]
+
+    def test_memory_write_remove_rejected(self, mcp_server_e2e, _event_loop):
+        server, _ = mcp_server_e2e
+        result = _run_tool(
+            server,
+            "memory_write",
+            {"action": "remove", "target": "memory", "old_text": "pytest", "content": ""},
+        )
+        assert result["success"] is False
+
+    def test_session_recall_search(self, mcp_server_e2e, _event_loop):
+        server, _ = mcp_server_e2e
+        result = _run_tool(server, "session_recall_search", {"query": "Hello", "limit": 5})
+        assert result["success"] is True
+        assert result["results"]
+        assert len(result["results"][0]["snippet"]) <= 300
+
+    def test_session_recall_search_does_not_use_summarizer(self, mcp_server_e2e, _event_loop, monkeypatch):
+        server, _ = mcp_server_e2e
+        monkeypatch.setattr("tools.session_search_tool.async_call_llm", lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not call llm")))
+        result = _run_tool(server, "session_recall_search", {"query": "Hello"})
+        assert result["success"] is True
+
+    def test_skills_list_local_only(self, mcp_server_e2e, _event_loop):
+        server, _ = mcp_server_e2e
+        result = _run_tool(server, "skills_list", {"query": "fastmcp"})
+        assert result["success"] is True
+        assert result["skills"][0]["name"] == "fastmcp-helper"
+
+    def test_skill_view_safe_main_and_reference(self, mcp_server_e2e, _event_loop):
+        server, _ = mcp_server_e2e
+        result = _run_tool(server, "skill_view_safe", {"name": "fastmcp-helper"})
+        assert result["success"] is True
+        assert "FastMCP Helper" in result["content"]
+
+        ref = _run_tool(server, "skill_view_safe", {"name": "fastmcp-helper", "file_path": "references/api.md"})
+        assert ref["success"] is True
+        assert "# API" in ref["content"]
+
+    def test_skill_view_safe_rejects_plugin_and_scripts(self, mcp_server_e2e, _event_loop):
+        server, _ = mcp_server_e2e
+        plugin = _run_tool(server, "skill_view_safe", {"name": "plugin:foo"})
+        assert plugin["success"] is False
+
+        scripts = _run_tool(server, "skill_view_safe", {"name": "fastmcp-helper", "file_path": "scripts/unsafe.py"})
+        assert scripts["success"] is False
+
+    def test_skill_create_or_patch_and_forbidden_actions(self, mcp_server_e2e, _event_loop):
+        server, _ = mcp_server_e2e
+        create = _run_tool(
+            server,
+            "skill_create_or_patch",
+            {
+                "action": "create",
+                "name": "new-skill",
+                "category": "python",
+                "content": "---\nname: new-skill\ndescription: New skill.\n---\n\n# New\n",
+            },
+        )
+        assert create["success"] is True
+
+        patch = _run_tool(
+            server,
+            "skill_create_or_patch",
+            {
+                "action": "patch",
+                "name": "new-skill",
+                "old_string": "New skill.",
+                "new_string": "Patched skill.",
+            },
+        )
+        assert patch["success"] is True
+
+        forbidden = _run_tool(
+            server,
+            "skill_create_or_patch",
+            {"action": "delete", "name": "new-skill"},
+        )
+        assert forbidden["success"] is False
+
+        for action in ("edit", "write_file", "remove_file"):
+            forbidden = _run_tool(
+                server,
+                "skill_create_or_patch",
+                {"action": action, "name": "new-skill"},
+            )
+            assert forbidden["success"] is False
+
+    def test_task_context_bundle(self, mcp_server_e2e, _event_loop, monkeypatch):
+        server, _ = mcp_server_e2e
+        monkeypatch.setattr("tools.session_search_tool.async_call_llm", lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not call llm")))
+        result = _run_tool(server, "task_context_bundle", {"query": "fastmcp"})
+        assert result["success"] is True
+        assert len(result["memory"]) <= 5
+        assert len(result["user"]) <= 5
+        assert len(result["session_hits"]) <= 5
+        assert len(result["skill_candidates"]) <= 5
+        assert all("content" not in skill for skill in result["skill_candidates"])
+        assert result["hints"] == [
+            "Use skill_view_safe(name=...) to inspect a candidate skill in full.",
+            "Use session_recall_search(query=...) for a focused follow-up recall search.",
+        ]
 
 
 # ---------------------------------------------------------------------------

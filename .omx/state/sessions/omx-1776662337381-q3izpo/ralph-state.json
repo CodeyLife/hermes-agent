@@ -1,0 +1,15 @@
+{
+  "active": true,
+  "mode": "ralph",
+  "current_phase": "starting",
+  "started_at": "2026-04-20T06:51:51.422Z",
+  "updated_at": "2026-04-20T06:51:51.422Z",
+  "session_id": "omx-1776662337381-q3izpo",
+  "thread_id": "019da953-e7c9-73f2-bea7-4257b9ab1216",
+  "turn_id": "019da98e-9526-76b3-af57-f91f54b367b8",
+  "iteration": 2,
+  "max_iterations": 50,
+  "owner_omx_session_id": "omx-1776662337381-q3izpo",
+  "owner_codex_thread_id": "019da953-e7c9-73f2-bea7-4257b9ab1216",
+  "last_turn_at": "2026-04-20T07:02:21.267Z"
+}

@@ -1,0 +1,34 @@
+# Context Snapshot
+
+- Task statement: Clarify how to expose more Hermes capabilities through FastMCP for external MCP clients like Trae, especially long memory, skill retrieval/management, and self-improving learning loops that can feed back into Trae-based coding.
+- Desired outcome: An execution-ready spec for what FastMCP surface to add, for whom, and with what boundaries.
+- Stated solution: Extend Hermes's existing MCP server/tool exposure so external tools can call Hermes memory and skill capabilities.
+- Probable intent hypothesis: User primarily codes inside Trae and wants Hermes to act as a persistent learning/copilot backend whose memory and skill evolution can improve future Trae sessions.
+- Known facts/evidence:
+  - `mcp_serve.py` already exposes a FastMCP server, but currently only for messaging bridge tools (conversation/event/message/approval surfaces).
+  - `tools/memory_tool.py` implements built-in persistent MEMORY.md/USER.md file-backed memory.
+  - `tools/session_search_tool.py` provides long-term conversation recall over session transcripts.
+  - `tools/skills_tool.py` exposes `skills_list` and `skill_view`.
+  - `tools/skill_manager_tool.py` exposes `skill_manage` for agent-created/edited skills.
+  - README claims Hermes has a closed learning loop: memory, autonomous skill creation, skill self-improvement, and cross-session recall.
+- Constraints:
+  - Current request explicitly invoked `$deep-interview`, so do not implement yet.
+  - Need brownfield design that fits existing Hermes MCP/FastMCP architecture.
+  - User cares about Trae as the primary external client.
+- Unknowns/open questions:
+  - Whether Trae should call raw Hermes primitives (memory/skills) or a higher-level "learn from this coding session" orchestration API.
+  - Which operations must be read-only vs write/mutate vs autonomous background evolution.
+  - Whether long memory means built-in MEMORY.md/USER.md only, session recall, external memory providers (e.g. Honcho), or all of them.
+  - How much decision authority Hermes should have to mutate skills/memory without explicit approval from Trae.
+  - Whether the scope includes authentication, multi-profile routing, or just local stdio MCP.
+- Decision-boundary unknowns:
+  - Can Hermes autonomously create/patch skills when external clients invoke it?
+  - Should Trae see raw skill contents and memory entries, or only summaries/search results?
+  - What actions require explicit user confirmation vs safe auto-execution?
+- Likely codebase touchpoints:
+  - `mcp_serve.py`
+  - `tools/memory_tool.py`
+  - `tools/session_search_tool.py`
+  - `tools/skills_tool.py`
+  - `tools/skill_manager_tool.py`
+  - potentially `plugins/memory/*` and `acp_adapter/*`

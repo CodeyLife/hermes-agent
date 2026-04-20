@@ -460,6 +460,60 @@ class MemoryStore:
             raise RuntimeError(f"Failed to write memory file {path}: {e}")
 
 
+def read_live_memory_state() -> Dict[str, Any]:
+    """Return live built-in memory state from disk.
+
+    This helper intentionally reads the current on-disk memory files rather than
+    any frozen system-prompt snapshot. It is safe for stateless callers such as
+    the MCP server that need fresh profile-scoped memory content on demand.
+    """
+    store = MemoryStore()
+    store.load_from_disk()
+    return {
+        "memory": list(store.memory_entries),
+        "user": list(store.user_entries),
+        "memory_count": len(store.memory_entries),
+        "user_count": len(store.user_entries),
+    }
+
+
+def memory_write_v1(
+    action: str,
+    target: str,
+    content: str,
+    old_text: str | None = None,
+) -> Dict[str, Any]:
+    """Narrow stateless memory mutation helper for MCP v1.
+
+    Only ``add`` and ``replace`` are supported. The helper creates and loads a
+    fresh ``MemoryStore`` per call so the result always reflects current disk
+    state in the active profile.
+    """
+    if target not in ("memory", "user"):
+        return {"success": False, "error": f"Invalid target '{target}'. Use 'memory' or 'user'."}
+
+    if action not in ("add", "replace"):
+        return {"success": False, "error": f"Unsupported action '{action}' for MCP v1. Use add or replace."}
+
+    store = MemoryStore()
+    store.load_from_disk()
+
+    if action == "add":
+        result = store.add(target, content or "")
+    else:
+        result = store.replace(target, old_text or "", content or "")
+
+    if result.get("success"):
+        return {
+            "success": True,
+            "target": target,
+            "action": action,
+            "message": result.get("message", ""),
+            "entries": result.get("entries", []),
+        }
+    return result
+
+
 def memory_tool(
     action: str,
     target: str = "memory",

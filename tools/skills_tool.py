@@ -644,6 +644,230 @@ def _load_category_description(category_dir: Path) -> Optional[str]:
         return None
 
 
+def _iter_local_skill_markdowns() -> List[Path]:
+    """Return ``SKILL.md`` files from the active profile's local skills dir only."""
+    if not SKILLS_DIR.exists():
+        return []
+    skill_mds: List[Path] = []
+    for skill_md in SKILLS_DIR.rglob("SKILL.md"):
+        if any(part in _EXCLUDED_SKILL_DIRS for part in skill_md.parts):
+            continue
+        skill_mds.append(skill_md)
+    return skill_mds
+
+
+def _score_skill_query_match(
+    *,
+    name: str,
+    description: str,
+    category: Optional[str],
+    tags: List[str],
+    query: str,
+) -> int:
+    """Deterministically score a local skill against a query."""
+    query = (query or "").strip().lower()
+    if not query:
+        return 0
+    haystacks = {
+        "name": name.lower(),
+        "description": description.lower(),
+        "category": (category or "").lower(),
+        "tags": " ".join(t.lower() for t in tags),
+    }
+    score = 0
+    for term in query.split():
+        if term in haystacks["name"]:
+            score += 5
+        if term in haystacks["description"]:
+            score += 3
+        if term and term in haystacks["category"]:
+            score += 2
+        if term and term in haystacks["tags"]:
+            score += 2
+    return score
+
+
+def local_skills_list(query: str = None, limit: int = 5) -> Dict[str, Any]:
+    """Return metadata for profile-local skills only.
+
+    This helper intentionally ignores plugin-qualified skills and configured
+    external skill directories so the MCP contract can stay profile-local and
+    side-effect free in v1.
+    """
+    limit = max(1, min(int(limit or 5), 20))
+    skills = []
+    seen_names: set[str] = set()
+
+    for skill_md in _iter_local_skill_markdowns():
+        try:
+            content = skill_md.read_text(encoding="utf-8")
+        except Exception as e:
+            logger.debug("Skipping unreadable local skill %s: %s", skill_md, e)
+            continue
+
+        try:
+            frontmatter, body = _parse_frontmatter(content)
+        except Exception:
+            frontmatter, body = {}, content
+
+        if not skill_matches_platform(frontmatter):
+            continue
+
+        name = str(frontmatter.get("name") or skill_md.parent.name)[:MAX_NAME_LENGTH]
+        if name in seen_names or _is_skill_disabled(name):
+            continue
+
+        description = str(frontmatter.get("description") or "").strip()
+        if not description:
+            for line in body.strip().split("\n"):
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    description = line
+                    break
+        if len(description) > MAX_DESCRIPTION_LENGTH:
+            description = description[: MAX_DESCRIPTION_LENGTH - 3] + "..."
+
+        category = _get_category_from_path(skill_md)
+        hermes_meta = {}
+        metadata = frontmatter.get("metadata")
+        if isinstance(metadata, dict):
+            hermes_meta = metadata.get("hermes", {}) or {}
+        tags = _parse_tags(hermes_meta.get("tags") or frontmatter.get("tags", ""))
+
+        score = _score_skill_query_match(
+            name=name,
+            description=description,
+            category=category,
+            tags=tags,
+            query=query or "",
+        )
+        if query and score <= 0:
+            continue
+
+        seen_names.add(name)
+        skills.append(
+            {
+                "name": name,
+                "description": description,
+                "category": category,
+                "tags": tags,
+                "_score": score,
+            }
+        )
+
+    skills.sort(key=lambda s: (-s["_score"], s["name"]))
+    for skill in skills:
+        skill.pop("_score", None)
+
+    return {
+        "success": True,
+        "skills": skills[:limit],
+        "count": len(skills[:limit]),
+    }
+
+
+def _resolve_local_skill_dir(name: str) -> Optional[Path]:
+    """Resolve a skill directory from the active profile's local skills dir only."""
+    direct_path = SKILLS_DIR / name
+    if direct_path.is_dir() and (direct_path / "SKILL.md").exists():
+        return direct_path
+
+    for skill_md in _iter_local_skill_markdowns():
+        if skill_md.parent.name == name:
+            return skill_md.parent
+    return None
+
+
+def local_skill_view_safe(name: str, file_path: str = None) -> Dict[str, Any]:
+    """Return local skill content without invoking setup-side effects.
+
+    This helper must remain profile-local and side-effect free for the MCP v1
+    contract. It intentionally does not call ``skill_view()``.
+    """
+    if ":" in name:
+        return {
+            "success": False,
+            "error": "Plugin-qualified skill names are not supported by skill_view_safe in MCP v1.",
+        }
+
+    skill_dir = _resolve_local_skill_dir(name)
+    if not skill_dir:
+        return {"success": False, "error": f"Local skill '{name}' not found."}
+
+    skill_md = skill_dir / "SKILL.md"
+    try:
+        content = skill_md.read_text(encoding="utf-8")
+    except Exception as e:
+        return {"success": False, "error": f"Failed to read local skill '{name}': {e}"}
+
+    try:
+        frontmatter, _ = _parse_frontmatter(content)
+    except Exception:
+        frontmatter = {}
+
+    resolved_name = str(frontmatter.get("name") or skill_dir.name)
+    if _is_skill_disabled(resolved_name):
+        return {"success": False, "error": f"Local skill '{resolved_name}' is disabled."}
+
+    if file_path:
+        from tools.path_security import has_traversal_component, validate_within_dir
+
+        if has_traversal_component(file_path):
+            return {"success": False, "error": "Path traversal ('..') is not allowed."}
+
+        normalized = Path(file_path)
+        if not normalized.parts:
+            return {"success": False, "error": "file_path must point to a file within the skill directory."}
+
+        if normalized.parts[0] not in {"references", "templates", "assets"}:
+            return {
+                "success": False,
+                "error": "Only references/, templates/, and assets/ files are readable via skill_view_safe in MCP v1.",
+            }
+
+        target_file = skill_dir / normalized
+        traversal_error = validate_within_dir(target_file, skill_dir)
+        if traversal_error:
+            return {"success": False, "error": traversal_error}
+        if not target_file.exists() or not target_file.is_file():
+            return {"success": False, "error": f"File '{file_path}' not found in local skill '{resolved_name}'."}
+
+        try:
+            file_content = target_file.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            return {
+                "success": True,
+                "name": resolved_name,
+                "file_path": file_path,
+                "content": f"[Binary file: {target_file.name}, size: {target_file.stat().st_size} bytes]",
+                "linked_files": None,
+            }
+        return {
+            "success": True,
+            "name": resolved_name,
+            "file_path": file_path,
+            "content": file_content,
+            "linked_files": None,
+        }
+
+    linked_files: List[str] = []
+    for dirname in ("references", "templates", "assets"):
+        candidate_dir = skill_dir / dirname
+        if not candidate_dir.exists():
+            continue
+        for child in candidate_dir.rglob("*"):
+            if child.is_file():
+                linked_files.append(str(child.relative_to(skill_dir)))
+    linked_files.sort()
+
+    return {
+        "success": True,
+        "name": resolved_name,
+        "content": content,
+        "linked_files": linked_files or None,
+    }
+
+
 def skills_list(category: str = None, task_id: str = None) -> str:
     """
     List all available skills (progressive disclosure tier 1 - minimal metadata).

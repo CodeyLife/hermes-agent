@@ -21,6 +21,7 @@ from tools.skill_manager_tool import (
     _write_file,
     _remove_file,
     skill_manage,
+    skill_create_or_patch_v1,
     VALID_NAME_RE,
     ALLOWED_SUBDIRS,
     MAX_NAME_LENGTH,
@@ -484,3 +485,24 @@ class TestSkillManageDispatcher:
             raw = skill_manage(action="create", name="test-skill", content=VALID_SKILL_CONTENT)
         result = json.loads(raw)
         assert result["success"] is True
+
+
+class TestSkillCreateOrPatchV1:
+    def test_rejects_forbidden_action(self, tmp_path):
+        with _skill_dir(tmp_path):
+            raw = skill_create_or_patch_v1(action="delete", name="test")
+        result = json.loads(raw)
+        assert result["success"] is False
+
+    def test_patch_only_targets_skill_md(self, tmp_path):
+        with _skill_dir(tmp_path):
+            json.loads(skill_manage(action="create", name="test-skill", content=VALID_SKILL_CONTENT))
+            raw = skill_create_or_patch_v1(
+                action="patch",
+                name="test-skill",
+                old_string="Do the thing.",
+                new_string="Do the patched thing.",
+            )
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "patched" in (tmp_path / "test-skill" / "SKILL.md").read_text(encoding="utf-8")

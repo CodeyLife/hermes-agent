@@ -7,6 +7,8 @@ from pathlib import Path
 from tools.memory_tool import (
     MemoryStore,
     memory_tool,
+    memory_write_v1,
+    read_live_memory_state,
     _scan_memory_content,
     ENTRY_DELIMITER,
     MEMORY_SCHEMA,
@@ -201,7 +203,7 @@ class TestMemoryStorePersistence:
         monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
         # Write file with duplicates
         mem_file = tmp_path / "MEMORY.md"
-        mem_file.write_text("duplicate entry\n§\nduplicate entry\n§\nunique entry")
+        mem_file.write_text("duplicate entry\n§\nduplicate entry\n§\nunique entry", encoding="utf-8")
 
         store = MemoryStore()
         store.load_from_disk()
@@ -254,4 +256,19 @@ class TestMemoryToolDispatcher:
 
     def test_remove_requires_old_text(self, store):
         result = json.loads(memory_tool(action="remove", store=store))
+        assert result["success"] is False
+
+
+class TestMcpMemoryHelpers:
+    def test_read_live_memory_state(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        (tmp_path / "MEMORY.md").write_text("fact 1\n§\nfact 2", encoding="utf-8")
+        (tmp_path / "USER.md").write_text("user fact", encoding="utf-8")
+        result = read_live_memory_state()
+        assert result["memory"] == ["fact 1", "fact 2"]
+        assert result["user"] == ["user fact"]
+
+    def test_memory_write_v1_rejects_remove(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        result = memory_write_v1("remove", "memory", "x")
         assert result["success"] is False

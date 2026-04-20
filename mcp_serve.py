@@ -1,22 +1,28 @@
 """
-Hermes MCP Server — expose messaging conversations as MCP tools.
+Hermes MCP Server：暴露消息会话与本地学习资产。
 
-Starts a stdio MCP server that lets any MCP client (Claude Code, Cursor, Codex,
-etc.) list conversations, read message history, send messages, poll for live
-events, and manage approval requests across all connected platforms.
+该模块会启动一个基于 stdio 的 MCP 服务端，让任意 MCP 客户端
+（Claude Code、Cursor、Codex、Trae 等）通过两类受限能力与 Hermes 交互：
 
-Matches OpenClaw's 9-tool MCP channel bridge surface:
+1. 面向会话、消息、事件与审批的消息桥接工具。
+2. 面向内置记忆、会话回忆与当前 profile 本地技能的确定性本地学习工具。
+
+消息能力面与 OpenClaw 的 9 个 MCP 通道桥接工具保持一致：
   conversations_list, conversation_get, messages_read, attachments_fetch,
   events_poll, events_wait, messages_send, permissions_list_open,
   permissions_respond
 
-Plus: channels_list (Hermes-specific extra)
+额外提供：
+  channels_list
+  memory_read, memory_write, session_recall_search
+  skills_list, skill_view_safe, skill_create_or_patch
+  task_context_bundle
 
-Usage:
+用法：
     hermes mcp serve
     hermes mcp serve --verbose
 
-MCP client config (e.g. claude_desktop_config.json):
+MCP 客户端配置示例（如 claude_desktop_config.json）：
     {
         "mcpServers": {
             "hermes": {
@@ -38,9 +44,15 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger("hermes.mcp_serve")
+
+MCP_SERVER_INSTRUCTIONS = (
+    "Hermes Agent 的 MCP 桥接服务。可使用这些工具跨消息平台访问会话，"
+    "并读取 Hermes 的本地学习资产，例如内置记忆、确定性会话回忆和当前"
+    "profile 的本地技能。"
+)
 
 # ---------------------------------------------------------------------------
 # Lazy MCP SDK import
@@ -163,6 +175,89 @@ def _extract_attachments(msg: dict) -> List[dict]:
             attachments.append({"type": "media", "path": path})
 
     return attachments
+
+
+def _structured_error(message: str, **extra: Any) -> str:
+    payload = {"success": False, "error": message}
+    payload.update(extra)
+    return json.dumps(payload, indent=2)
+
+
+def _clamp(value: int, *, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(value, maximum))
+
+
+def _bounded_excerpt(value: Any, limit: int) -> str:
+    text = "" if value is None else str(value)
+    return text if len(text) <= limit else text[:limit]
+
+
+def _deterministic_session_recall_search(
+    db: Any,
+    *,
+    query: str,
+    limit: int = 5,
+) -> dict:
+    """Return deterministic session recall hits without invoking any LLM path."""
+    if db is None:
+        return {"success": False, "error": "Session database unavailable"}
+
+    query = (query or "").strip()
+    if not query:
+        return {"success": False, "error": "query is required"}
+
+    limit = _clamp(limit, default=5, minimum=1, maximum=10)
+
+    try:
+        raw_results = db.search_messages(query=query, limit=limit, offset=0)
+    except TypeError:
+        # Some test doubles may not accept offset/source_filter kwargs beyond query/limit.
+        raw_results = db.search_messages(query=query, limit=limit)
+    except Exception as e:
+        return {"success": False, "error": f"Failed to search session recall: {e}"}
+
+    results = []
+    for row in raw_results[:limit]:
+        context_before = None
+        context_after = None
+        context = row.get("context") or []
+        if isinstance(context, list) and context:
+            before = []
+            after = []
+            seen_current = False
+            for item in context:
+                role = item.get("role", "")
+                content = _bounded_excerpt(item.get("content", ""), 150)
+                if role == row.get("role") and not seen_current:
+                    seen_current = True
+                    continue
+                if not seen_current:
+                    before.append(content)
+                else:
+                    after.append(content)
+            if before:
+                context_before = "\n".join(before)[:150]
+            if after:
+                context_after = "\n".join(after)[:150]
+
+        entry = {
+            "session_id": row.get("session_id", ""),
+            "source": row.get("source", ""),
+            "timestamp": row.get("timestamp"),
+            "message_id": row.get("id"),
+            "snippet": _bounded_excerpt(row.get("snippet", ""), 300),
+        }
+        if context_before:
+            entry["context_before"] = context_before
+        if context_after:
+            entry["context_after"] = context_after
+        results.append(entry)
+
+    return {"success": True, "query": query, "results": results, "count": len(results)}
 
 
 # ---------------------------------------------------------------------------
@@ -432,17 +527,13 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
     """Create and return the Hermes MCP server with all tools registered."""
     if not _MCP_SERVER_AVAILABLE:
         raise ImportError(
-            "MCP server requires the 'mcp' package. "
-            f"Install with: {sys.executable} -m pip install 'mcp'"
+            "MCP 服务端依赖 'mcp' 包。"
+            f"可使用以下命令安装：{sys.executable} -m pip install 'mcp'"
         )
 
     mcp = FastMCP(
         "hermes",
-        instructions=(
-            "Hermes Agent messaging bridge. Use these tools to interact with "
-            "conversations across Telegram, Discord, Slack, WhatsApp, Signal, "
-            "Matrix, and other connected platforms."
-        ),
+        instructions=MCP_SERVER_INSTRUCTIONS,
     )
 
     bridge = event_bridge or EventBridge()
@@ -455,15 +546,15 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
         limit: int = 50,
         search: Optional[str] = None,
     ) -> str:
-        """List active messaging conversations across connected platforms.
+        """列出已连接平台上的活跃消息会话。
 
-        Returns conversations with their session keys (needed for messages_read),
-        platform, chat type, display name, and last activity time.
+        返回每个会话的 session key（`messages_read` 需要用到）、平台、
+        会话类型、显示名称以及最近活跃时间。
 
         Args:
-            platform: Filter by platform name (telegram, discord, slack, etc.)
-            limit: Maximum number of conversations to return (default 50)
-            search: Optional text to filter conversations by name
+            platform: 按平台名过滤（如 telegram、discord、slack）
+            limit: 最多返回多少条会话（默认 50）
+            search: 可选搜索词，用于按名称筛选会话
         """
         entries = _load_sessions_index()
         conversations = []
@@ -507,10 +598,10 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
 
     @mcp.tool()
     def conversation_get(session_key: str) -> str:
-        """Get detailed info about one conversation by its session key.
+        """根据 session key 获取单个会话的详细信息。
 
         Args:
-            session_key: The session key from conversations_list
+            session_key: 来自 conversations_list 的 session key
         """
         entries = _load_sessions_index()
         entry = entries.get(session_key)
@@ -543,14 +634,13 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
         session_key: str,
         limit: int = 50,
     ) -> str:
-        """Read recent messages from a conversation.
+        """读取会话中的最近消息。
 
-        Returns the message history in chronological order with role, content,
-        and timestamp for each message.
+        按时间顺序返回消息历史，每条包含角色、内容和时间戳。
 
         Args:
-            session_key: The session key from conversations_list
-            limit: Maximum number of messages to return (default 50, most recent)
+            session_key: 来自 conversations_list 的 session key
+            limit: 最多返回多少条消息（默认 50，取最近消息）
         """
         entries = _load_sessions_index()
         entry = entries.get(session_key)
@@ -599,14 +689,13 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
         session_key: str,
         message_id: str,
     ) -> str:
-        """List non-text attachments for a message in a conversation.
+        """列出会话中某条消息的非文本附件。
 
-        Extracts images, media files, and other non-text content blocks
-        from the specified message.
+        会从指定消息中提取图片、媒体文件以及其他非文本内容块。
 
         Args:
-            session_key: The session key from conversations_list
-            message_id: The message ID from messages_read
+            session_key: 来自 conversations_list 的 session key
+            message_id: 来自 messages_read 的消息 ID
         """
         entries = _load_sessions_index()
         entry = entries.get(session_key)
@@ -652,17 +741,17 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
         session_key: Optional[str] = None,
         limit: int = 20,
     ) -> str:
-        """Poll for new conversation events since a cursor position.
+        """从指定游标之后轮询新的会话事件。
 
-        Returns events that have occurred since the given cursor. Use the
-        returned next_cursor value for subsequent polls.
+        返回给定游标之后发生的事件。后续继续轮询时，请使用返回结果中的
+        next_cursor。
 
-        Event types: message, approval_requested, approval_resolved
+        事件类型：message、approval_requested、approval_resolved
 
         Args:
-            after_cursor: Return events after this cursor (0 for all)
-            session_key: Optional filter to one conversation
-            limit: Maximum events to return (default 20)
+            after_cursor: 返回该游标之后的事件（0 表示全部）
+            session_key: 可选，仅过滤某一个会话
+            limit: 最多返回多少个事件（默认 20）
         """
         result = bridge.poll_events(
             after_cursor=after_cursor,
@@ -679,15 +768,15 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
         session_key: Optional[str] = None,
         timeout_ms: int = 30000,
     ) -> str:
-        """Wait for the next conversation event (long-poll).
+        """等待下一个会话事件（长轮询）。
 
-        Blocks until a matching event arrives or the timeout expires.
-        Use this for near-real-time event delivery without polling.
+        会阻塞直到匹配事件到达或超时结束。适合在不频繁轮询的情况下实现
+        接近实时的事件获取。
 
         Args:
-            after_cursor: Wait for events after this cursor
-            session_key: Optional filter to one conversation
-            timeout_ms: Maximum wait time in milliseconds (default 30000)
+            after_cursor: 等待该游标之后的事件
+            session_key: 可选，仅过滤某一个会话
+            timeout_ms: 最长等待时间，单位毫秒（默认 30000）
         """
         event = bridge.wait_for_event(
             after_cursor=after_cursor,
@@ -705,20 +794,19 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
         target: str,
         message: str,
     ) -> str:
-        """Send a message to a platform conversation.
+        """向平台会话发送消息。
 
-        The target format is "platform:chat_id" — same format used by the
-        channels_list tool. You can also use human-friendly channel names
-        that will be resolved automatically.
+        target 格式为 "platform:chat_id"，与 channels_list 返回的格式一致。
+        也支持传入更友好的频道名称，系统会自动尝试解析。
 
-        Examples:
+        示例：
             target="telegram:6308981865"
             target="discord:#general"
             target="slack:#engineering"
 
         Args:
-            target: Platform target in "platform:identifier" format
-            message: The message text to send
+            target: "platform:identifier" 格式的平台目标
+            message: 要发送的消息文本
         """
         if not target or not message:
             return json.dumps({"error": "Both target and message are required"})
@@ -738,13 +826,13 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
 
     @mcp.tool()
     def channels_list(platform: Optional[str] = None) -> str:
-        """List available messaging channels and targets across platforms.
+        """列出各平台可用的消息频道与目标。
 
-        Returns channels that you can send messages to. The target strings
-        returned here can be used directly with the messages_send tool.
+        返回可直接发送消息的频道信息，这里的 target 字符串可以直接传给
+        messages_send。
 
         Args:
-            platform: Filter by platform name (telegram, discord, slack, etc.)
+            platform: 按平台名过滤（如 telegram、discord、slack）
         """
         directory = _load_channel_directory()
         if not directory:
@@ -788,15 +876,190 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
 
         return json.dumps({"count": len(channels), "channels": channels}, indent=2)
 
+    # -- memory_read -------------------------------------------------------
+
+    @mcp.tool()
+    def memory_read() -> str:
+        """读取当前 profile 下实时生效的内置 MEMORY.md 与 USER.md 条目。"""
+        try:
+            from tools.memory_tool import read_live_memory_state
+
+            return json.dumps(read_live_memory_state(), indent=2, ensure_ascii=False)
+        except Exception as e:
+            return _structured_error(f"Failed to read live memory: {e}")
+
+    # -- memory_write ------------------------------------------------------
+
+    @mcp.tool()
+    def memory_write(
+        action: str,
+        target: str,
+        content: str,
+        old_text: Optional[str] = None,
+    ) -> str:
+        """通过收敛后的 MCP v1 协议写入持久化内置记忆。
+
+        支持的动作：add、replace。remove 被有意排除。
+        """
+        if action not in ("add", "replace"):
+            return _structured_error(
+                f"Unsupported action '{action}' for memory_write. Use add or replace."
+            )
+
+        try:
+            from tools.memory_tool import memory_write_v1
+
+            result = memory_write_v1(
+                action=action,
+                target=target,
+                content=content,
+                old_text=old_text,
+            )
+            return json.dumps(result, indent=2, ensure_ascii=False)
+        except Exception as e:
+            return _structured_error(f"Failed to write memory: {e}")
+
+    # -- session_recall_search --------------------------------------------
+
+    @mcp.tool()
+    def session_recall_search(
+        query: str,
+        limit: int = 5,
+    ) -> str:
+        """在不依赖任何 LLM 摘要的前提下，确定性搜索历史会话消息。"""
+        db = _get_session_db()
+        return json.dumps(
+            _deterministic_session_recall_search(db, query=query, limit=limit),
+            indent=2,
+            ensure_ascii=False,
+        )
+
+    # -- skills_list -------------------------------------------------------
+
+    @mcp.tool()
+    def skills_list(
+        query: Optional[str] = None,
+        limit: int = 5,
+    ) -> str:
+        """仅列出当前 profile 本地技能的元数据。"""
+        try:
+            from tools.skills_tool import local_skills_list
+
+            result = local_skills_list(query=query, limit=limit)
+            return json.dumps(result, indent=2, ensure_ascii=False)
+        except Exception as e:
+            return _structured_error(f"Failed to list local skills: {e}")
+
+    # -- skill_view_safe ---------------------------------------------------
+
+    @mcp.tool()
+    def skill_view_safe(
+        name: str,
+        file_path: Optional[str] = None,
+    ) -> str:
+        """读取当前 profile 的本地技能，不触发插件/外部查找或初始化副作用。"""
+        try:
+            from tools.skills_tool import local_skill_view_safe
+
+            result = local_skill_view_safe(name=name, file_path=file_path)
+            return json.dumps(result, indent=2, ensure_ascii=False)
+        except Exception as e:
+            return _structured_error(f"Failed to read local skill safely: {e}")
+
+    # -- skill_create_or_patch --------------------------------------------
+
+    @mcp.tool()
+    def skill_create_or_patch(
+        action: str,
+        name: str,
+        content: Optional[str] = None,
+        category: Optional[str] = None,
+        old_string: Optional[str] = None,
+        new_string: Optional[str] = None,
+        replace_all: bool = False,
+    ) -> str:
+        """创建新技能，或仅对 SKILL.md 内容进行补丁修改。"""
+        try:
+            from tools.skill_manager_tool import skill_create_or_patch_v1
+
+            return skill_create_or_patch_v1(
+                action=action,
+                name=name,
+                content=content,
+                category=category,
+                old_string=old_string,
+                new_string=new_string,
+                replace_all=replace_all,
+            )
+        except Exception as e:
+            return _structured_error(f"Failed to create or patch local skill: {e}")
+
+    # -- task_context_bundle ----------------------------------------------
+
+    @mcp.tool()
+    def task_context_bundle(
+        query: str,
+        memory_limit: int = 5,
+        session_limit: int = 5,
+        skill_limit: int = 5,
+    ) -> str:
+        """返回适用于 Trae 的有界任务前上下文包。
+
+        该上下文包是对实时记忆、确定性会话回忆和本地技能元数据的便捷索引，
+        不会内联完整技能正文。
+        """
+        query = (query or "").strip()
+        if not query:
+            return _structured_error("query is required")
+
+        memory_limit = _clamp(memory_limit, default=5, minimum=1, maximum=5)
+        session_limit = _clamp(session_limit, default=5, minimum=1, maximum=5)
+        skill_limit = _clamp(skill_limit, default=5, minimum=1, maximum=5)
+
+        try:
+            from tools.memory_tool import read_live_memory_state
+            from tools.skills_tool import local_skills_list
+
+            memory_state = read_live_memory_state()
+            session_result = _deterministic_session_recall_search(
+                _get_session_db(),
+                query=query,
+                limit=session_limit,
+            )
+            skills_result = local_skills_list(query=query, limit=skill_limit)
+
+            if not session_result.get("success"):
+                return json.dumps(session_result, indent=2, ensure_ascii=False)
+            if not skills_result.get("success"):
+                return json.dumps(skills_result, indent=2, ensure_ascii=False)
+
+            skill_candidates = skills_result.get("skills", [])[:skill_limit]
+            hints = [
+                "可使用 skill_view_safe(name=...) 查看候选技能的完整内容。",
+                "可使用 session_recall_search(query=...) 做更聚焦的后续会话回忆检索。",
+            ]
+
+            bundle = {
+                "success": True,
+                "query": query,
+                "memory": memory_state.get("memory", [])[-memory_limit:],
+                "user": memory_state.get("user", [])[-memory_limit:],
+                "session_hits": session_result.get("results", [])[:session_limit],
+                "skill_candidates": skill_candidates,
+                "hints": hints,
+            }
+            return json.dumps(bundle, indent=2, ensure_ascii=False)
+        except Exception as e:
+            return _structured_error(f"Failed to build task context bundle: {e}")
+
     # -- permissions_list_open ---------------------------------------------
 
     @mcp.tool()
     def permissions_list_open() -> str:
-        """List pending approval requests observed during this bridge session.
+        """列出当前桥接会话中观察到的待处理审批请求。
 
-        Returns exec and plugin approval requests that the bridge has seen
-        since it started. Approvals are live-session only — older approvals
-        from before the bridge connected are not included.
+        返回桥接服务启动后看到的 exec 与插件审批请求。这里只包含当前在线
+        会话期间的审批，不包含桥接连接前的历史审批。
         """
         approvals = bridge.list_pending_approvals()
         return json.dumps({
@@ -811,11 +1074,11 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
         id: str,
         decision: str,
     ) -> str:
-        """Respond to a pending approval request.
+        """响应待处理的审批请求。
 
         Args:
-            id: The approval ID from permissions_list_open
-            decision: One of "allow-once", "allow-always", or "deny"
+            id: 来自 permissions_list_open 的审批 ID
+            decision: "allow-once"、"allow-always" 或 "deny"
         """
         if decision not in ("allow-once", "allow-always", "deny"):
             return json.dumps({
@@ -834,11 +1097,11 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
 # ---------------------------------------------------------------------------
 
 def run_mcp_server(verbose: bool = False) -> None:
-    """Start the Hermes MCP server on stdio."""
+    """通过 stdio 启动 Hermes MCP 服务端。"""
     if not _MCP_SERVER_AVAILABLE:
         print(
-            "Error: MCP server requires the 'mcp' package.\n"
-            f"Install with: {sys.executable} -m pip install 'mcp'",
+            "错误：MCP 服务端依赖 'mcp' 包。\n"
+            f"可使用以下命令安装：{sys.executable} -m pip install 'mcp'",
             file=sys.stderr,
         )
         sys.exit(1)

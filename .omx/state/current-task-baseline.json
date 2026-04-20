@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "tasks": [
+    {
+      "branch_name": "main",
+      "worktree_path": "D:\\GithubProject\\hermes-agent",
+      "status": "active",
+      "created_at": "2026-04-20T06:00:22.666Z",
+      "updated_at": "2026-04-20T07:24:09.595Z"
+    },
+    {
+      "branch_name": "yjj",
+      "worktree_path": "D:\\GithubProject\\hermes-agent",
+      "status": "active",
+      "created_at": "2026-04-20T05:28:07.747Z",
+      "updated_at": "2026-04-20T05:47:47.559Z"
+    }
+  ]
+}

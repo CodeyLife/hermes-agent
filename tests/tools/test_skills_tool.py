@@ -14,6 +14,8 @@ from tools.skills_tool import (
     _parse_tags,
     _get_category_from_path,
     _find_all_skills,
+    local_skills_list,
+    local_skill_view_safe,
     skill_matches_platform,
     skills_list,
     skill_view,
@@ -940,3 +942,32 @@ Do the legacy thing.
         assert result["setup_needed"] is False
         assert result["missing_required_environment_variables"] == []
         assert result["readiness_status"] == "available"
+
+
+class TestLocalOnlyHelpers:
+    def test_local_skills_list_only_scans_profile_local_skills(self, tmp_path):
+        _make_skill(tmp_path, "local-skill", frontmatter_extra="metadata:\n  hermes:\n    tags: [fastmcp]\n")
+        external = tmp_path.parent / "external-skills"
+        _make_skill(external, "external-skill", frontmatter_extra="metadata:\n  hermes:\n    tags: [fastmcp]\n")
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path), \
+             patch("agent.skill_utils.get_external_skills_dirs", return_value=[external]):
+            result = local_skills_list(query="fastmcp", limit=10)
+
+        assert result["success"] is True
+        names = [s["name"] for s in result["skills"]]
+        assert "local-skill" in names
+        assert "external-skill" not in names
+
+    def test_local_skill_view_safe_rejects_plugin_and_scripts(self, tmp_path):
+        _make_skill(tmp_path, "local-skill")
+        scripts = tmp_path / "local-skill" / "scripts"
+        scripts.mkdir(parents=True, exist_ok=True)
+        (scripts / "helper.py").write_text("print('hi')", encoding="utf-8")
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            plugin = local_skill_view_safe("plugin:foo")
+            scripts_result = local_skill_view_safe("local-skill", file_path="scripts/helper.py")
+
+        assert plugin["success"] is False
+        assert scripts_result["success"] is False

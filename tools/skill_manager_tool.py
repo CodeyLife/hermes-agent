@@ -674,6 +674,45 @@ def skill_manage(
     return json.dumps(result, ensure_ascii=False)
 
 
+def skill_create_or_patch_v1(
+    action: str,
+    name: str,
+    *,
+    content: str = None,
+    category: str = None,
+    old_string: str = None,
+    new_string: str = None,
+    replace_all: bool = False,
+) -> str:
+    """Narrow MCP v1 adapter over ``skill_manage``.
+
+    V1 only supports creating new skills and patching ``SKILL.md``. Supporting
+    file mutation and broader destructive actions stay out of scope.
+    """
+    if action not in {"create", "patch"}:
+        return tool_error(
+            f"Unsupported action '{action}' for MCP v1. Use create or patch.",
+            success=False,
+        )
+
+    if action == "create":
+        return skill_manage(
+            action="create",
+            name=name,
+            content=content,
+            category=category,
+        )
+
+    return skill_manage(
+        action="patch",
+        name=name,
+        old_string=old_string,
+        new_string=new_string,
+        replace_all=replace_all,
+        file_path=None,
+    )
+
+
 # =============================================================================
 # OpenAI Function-Calling Schema
 # =============================================================================
