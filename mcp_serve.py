@@ -1400,7 +1400,7 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
 
     @mcp.tool()
     def plan_skill_read() -> str:
-        """读取 Hermes 仓库内置的 /plan skill 原文，供 Trae 规划时参考。"""
+        """读取 Hermes MCP 内置的 Codex 风格 plan skill 原文，供宿主规划时参考。"""
         try:
             from tools.plan_tool import read_bundled_plan_skill
 
@@ -1408,6 +1408,40 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
             return json.dumps(result, indent=2, ensure_ascii=False)
         except Exception as e:
             return _structured_error(f"Failed to read bundled plan skill: {e}")
+
+    @mcp.tool()
+    def plan(
+        instruction: str,
+        mode: str = "auto",
+        interactive: bool = False,
+        deliberate: bool = False,
+        review: bool = False,
+    ) -> str:
+        """生成 Codex plan 工作流调用指令，用于 MCP 宿主进行规划。
+
+        该工具是提示包包装器：它不会在 MCP 服务端内部执行规划、写计划或
+        调用子代理，而是返回宿主 agent 下一轮应使用的 `invocation_message`。
+
+        Args:
+            instruction: 需要规划、审查或澄清的任务描述
+            mode: `auto`、`direct`、`consensus` 或 `review`
+            interactive: 是否追加交互式规划标志
+            deliberate: 是否追加高风险审议标志
+            review: 是否强制 review 模式（等价于 mode=`review`）
+        """
+        try:
+            from tools.mcp_skill_wrappers import plan_invocation
+
+            result = plan_invocation(
+                instruction,
+                mode=mode,
+                interactive=interactive,
+                deliberate=deliberate,
+                review=review,
+            )
+            return json.dumps(result, indent=2, ensure_ascii=False)
+        except Exception as e:
+            return _structured_error(f"Failed to build plan skill invocation: {e}")
 
     @mcp.tool()
     def autopilot(
@@ -1495,15 +1529,17 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
         interactive: bool = False,
         deliberate: bool = False,
     ) -> str:
-        """生成 Ralplan 共识规划工作流调用指令。
+        """生成自包含的 Ralplan 共识规划工作流调用提示包。
 
         适合在编码前先做高质量方案设计，让宿主客户端进入 Hermes 的
-        `ralplan` 流程，也就是 `$plan --consensus` 的专用包装。可选：
+        `ralplan` 流程，也就是 `$plan --consensus` 的专用包装。该工具会
+        同时打包 Codex plan skill 与 Planner / Architect / Critic 角色定义，
+        让 MCP 宿主不依赖本地 `.codex` 文件也能执行对应提示工作流。可选：
         - `interactive=true`：在关键节点停下来等待用户反馈
         - `deliberate=true`：启用高风险任务的深度审议模式
 
-        返回值不会直接产出最终实现，只返回宿主 agent 下一轮应使用的
-        `invocation_message`。
+        返回值不会直接产出最终实现，也不会在 MCP 服务端内部运行多代理；
+        它只返回宿主 agent 下一轮应使用的 `invocation_message`。
 
         Args:
             instruction: 需要进行共识规划的任务描述

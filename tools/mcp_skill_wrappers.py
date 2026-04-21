@@ -15,13 +15,25 @@ from typing import Any, Dict
 BUNDLED_MCP_SKILLS: Dict[str, str] = {
     "autopilot": "autopilot",
     "deep-interview": "deep-interview",
+    "plan": "plan",
     "ralph": "ralph",
     "ralplan": "ralplan",
 }
 
+RALPLAN_SUPPORTING_ASSETS = (
+    Path("my_skills/plan/SKILL.md"),
+    Path("my_skills/ralplan/references/roles/planner.md"),
+    Path("my_skills/ralplan/references/roles/architect.md"),
+    Path("my_skills/ralplan/references/roles/critic.md"),
+)
+
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parent.parent
+
+
+def _repo_relative(path: Path) -> str:
+    return str(path.relative_to(_repo_root()).as_posix())
 
 
 def _bundled_skill_dir(skill_name: str) -> Path:
@@ -91,7 +103,7 @@ def build_bundled_skill_invocation(
     return {
         "success": True,
         "skill": resolved_name,
-        "source": str(skill_dir.relative_to(_repo_root()).as_posix()),
+        "source": _repo_relative(skill_dir),
         "description": loaded_skill.get("description", ""),
         "invocation_message": invocation_message,
         "client_action": (
@@ -100,6 +112,45 @@ def build_bundled_skill_invocation(
             "the skill prompt; it does not execute the workflow by itself."
         ),
     }
+
+
+def _append_supporting_assets(result: Dict[str, Any], asset_paths: tuple[Path, ...]) -> Dict[str, Any]:
+    """Inline workflow support assets so MCP hosts need no local Codex install.
+
+    ``_build_skill_message`` lists supporting files when they live below the
+    invoked skill directory, but ralplan depends on a sibling ``plan`` skill and
+    role prompts.  MCP clients often cannot call Hermes ``skill_view`` against
+    these repo-private assets, so the ralplan wrapper makes the dependency
+    explicit and self-contained.
+    """
+    sections = [
+        "",
+        "[Bundled workflow support assets for MCP hosts]",
+        (
+            "Use these definitions when executing the workflow. They are inlined "
+            "because this MCP tool returns a prompt package; the MCP server does "
+            "not run Planner/Architect/Critic agents by itself."
+        ),
+    ]
+    included_assets: list[str] = []
+    root = _repo_root()
+    for rel_path in asset_paths:
+        asset_path = root / rel_path
+        if not asset_path.exists():
+            raise FileNotFoundError(f"Bundled workflow asset not found: {rel_path.as_posix()}")
+        included_assets.append(rel_path.as_posix())
+        sections.extend(
+            [
+                "",
+                f"--- BEGIN {rel_path.as_posix()} ---",
+                asset_path.read_text(encoding="utf-8").strip(),
+                f"--- END {rel_path.as_posix()} ---",
+            ]
+        )
+
+    result["invocation_message"] = str(result["invocation_message"]).rstrip() + "\n" + "\n".join(sections)
+    result["included_assets"] = included_assets
+    return result
 
 
 def autopilot_invocation(instruction: str) -> Dict[str, Any]:
@@ -129,6 +180,35 @@ def ralph_invocation(instruction: str) -> Dict[str, Any]:
     return build_bundled_skill_invocation("ralph", instruction)
 
 
+def plan_invocation(
+    instruction: str,
+    *,
+    mode: str = "auto",
+    interactive: bool = False,
+    deliberate: bool = False,
+    review: bool = False,
+) -> Dict[str, Any]:
+    mode = (mode or "auto").strip().lower()
+    if mode not in {"auto", "direct", "consensus", "review"}:
+        raise ValueError("mode must be one of: auto, direct, consensus, review")
+
+    flags = []
+    if review or mode == "review":
+        flags.append("--review")
+    elif mode == "direct":
+        flags.append("--direct")
+    elif mode == "consensus":
+        flags.append("--consensus")
+
+    if interactive:
+        flags.append("--interactive")
+    if deliberate:
+        flags.append("--deliberate")
+
+    full_instruction = " ".join([*flags, instruction]).strip()
+    return build_bundled_skill_invocation("plan", full_instruction)
+
+
 def ralplan_invocation(
     instruction: str,
     *,
@@ -141,4 +221,5 @@ def ralplan_invocation(
     if deliberate:
         flags.append("--deliberate")
     full_instruction = " ".join([*flags, instruction]).strip()
-    return build_bundled_skill_invocation("ralplan", full_instruction)
+    result = build_bundled_skill_invocation("ralplan", full_instruction)
+    return _append_supporting_assets(result, RALPLAN_SUPPORTING_ASSETS)

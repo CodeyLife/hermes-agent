@@ -1,31 +1,19 @@
 {
   "version": 1,
-  "active": true,
-  "skill": "plan",
-  "keyword": "$plan",
-  "phase": "planning",
-  "activated_at": "2026-04-21T03:07:36.114Z",
-  "updated_at": "2026-04-21T03:50:45.232Z",
+  "active": false,
+  "skill": "ralph",
+  "keyword": "$ralph",
+  "phase": "verifying",
+  "activated_at": "2026-04-21T15:55:33.217Z",
+  "updated_at": "2026-04-21T15:56:49.806Z",
   "source": "keyword-detector",
-  "session_id": "omx-1776733599765-v1kt0o",
-  "thread_id": "019dadf1-46d8-70e1-933d-74f7e1f51f95",
-  "turn_id": "019dadfa-e0f6-7e20-a4e5-8372db1c2b74",
-  "active_skills": [
-    {
-      "skill": "plan",
-      "phase": "planning",
-      "active": true,
-      "activated_at": "2026-04-21T03:07:36.114Z",
-      "updated_at": "2026-04-21T03:07:36.114Z",
-      "session_id": "omx-1776733599765-v1kt0o",
-      "thread_id": "019dadf1-46d8-70e1-933d-74f7e1f51f95",
-      "turn_id": "019dadfa-e0f6-7e20-a4e5-8372db1c2b74"
-    }
-  ],
+  "session_id": "019db09b-d44a-7112-80fa-10166f7aa7ee",
+  "turn_id": "019db09e-e814-7fe3-bc5e-15f2d8a5fcd2",
+  "active_skills": [],
   "input_lock": {
     "active": false,
     "scope": "deep-interview-auto-approval",
-    "acquired_at": "2026-04-20T05:28:07.261Z",
+    "acquired_at": "2026-04-21T15:16:43.239Z",
     "blocked_inputs": [
       "yes",
       "y",
@@ -37,9 +25,9 @@
       "next i should"
     ],
     "message": "Deep interview is active; auto-approval shortcuts are blocked until the interview finishes.",
-    "released_at": "2026-04-21T03:07:36.114Z",
+    "released_at": "2026-04-21T15:36:18.313Z",
     "exit_reason": "handoff"
   },
-  "iteration": 1,
-  "last_turn_at": "2026-04-21T09:34:17.690Z"
+  "initialized_mode": "ralph",
+  "initialized_state_path": ".omx/state/sessions/019db09b-d44a-7112-80fa-10166f7aa7ee/ralph-state.json"
 }

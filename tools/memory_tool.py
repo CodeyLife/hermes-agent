@@ -477,6 +477,16 @@ def read_live_memory_state() -> Dict[str, Any]:
     }
 
 
+def _normalize_memory_target(target: str | None) -> str:
+    """Normalize common target aliases to canonical built-in memory names."""
+    normalized = (target or "memory").strip().lower().replace("\\", "/")
+    if normalized in ("memory", "memory.md", "memories/memory.md"):
+        return "memory"
+    if normalized in ("user", "user.md", "memories/user.md"):
+        return "user"
+    return normalized
+
+
 def memory_write_v1(
     action: str,
     target: str,
@@ -489,6 +499,7 @@ def memory_write_v1(
     fresh ``MemoryStore`` per call so the result always reflects current disk
     state in the active profile.
     """
+    target = _normalize_memory_target(target)
     if target not in ("memory", "user"):
         return {"success": False, "error": f"Invalid target '{target}'. Use 'memory' or 'user'."}
 
@@ -529,6 +540,7 @@ def memory_tool(
     if store is None:
         return tool_error("Memory is not available. It may be disabled in config or this environment.", success=False)
 
+    target = _normalize_memory_target(target)
     if target not in ("memory", "user"):
         return tool_error(f"Invalid target '{target}'. Use 'memory' or 'user'.", success=False)
 

@@ -4,22 +4,22 @@
   "skill": "plan",
   "keyword": "$plan",
   "phase": "planning",
-  "activated_at": "2026-04-21T06:16:11.080Z",
-  "updated_at": "2026-04-21T07:01:15.916Z",
+  "activated_at": "2026-04-21T03:07:36.114Z",
+  "updated_at": "2026-04-21T15:35:37.524Z",
   "source": "keyword-detector",
   "session_id": "omx-1776733599765-v1kt0o",
-  "thread_id": "019daecb-4ed4-7db2-9095-db5694480e70",
-  "turn_id": "019daed6-d24b-74c3-ba05-b6435a6bfcac",
+  "thread_id": "019dadf1-46d8-70e1-933d-74f7e1f51f95",
+  "turn_id": "019dadfa-e0f6-7e20-a4e5-8372db1c2b74",
   "active_skills": [
     {
       "skill": "plan",
       "phase": "planning",
       "active": true,
-      "activated_at": "2026-04-21T06:16:11.080Z",
-      "updated_at": "2026-04-21T07:01:15.916Z",
+      "activated_at": "2026-04-21T03:07:36.114Z",
+      "updated_at": "2026-04-21T03:07:36.114Z",
       "session_id": "omx-1776733599765-v1kt0o",
-      "thread_id": "019daecb-4ed4-7db2-9095-db5694480e70",
-      "turn_id": "019daed6-d24b-74c3-ba05-b6435a6bfcac"
+      "thread_id": "019dadf1-46d8-70e1-933d-74f7e1f51f95",
+      "turn_id": "019dadfa-e0f6-7e20-a4e5-8372db1c2b74"
     }
   ],
   "input_lock": {

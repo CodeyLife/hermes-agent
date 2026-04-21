@@ -16,10 +16,10 @@ def _normalize_relpath(path: Path) -> str:
 
 
 def read_bundled_plan_skill() -> Dict[str, Any]:
-    """Return the repo-bundled Hermes ``/plan`` skill for Trae guidance."""
-    skill_path = _repo_root() / "skills" / "software-development" / "plan" / "SKILL.md"
+    """Return the repo-bundled Codex-style ``plan`` skill for MCP guidance."""
+    skill_path = _repo_root() / "my_skills" / "plan" / "SKILL.md"
     if not skill_path.exists():
-        return {"success": False, "error": "Bundled Hermes /plan skill not found."}
+        return {"success": False, "error": "Bundled MCP plan skill not found."}
     content = skill_path.read_text(encoding="utf-8")
     return {
         "success": True,

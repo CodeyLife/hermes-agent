@@ -1564,7 +1564,24 @@ class TestE2ELearningTools:
         guide = _run_tool(server, "plan_skill_read")
         assert guide["success"] is True
         assert guide["name"] == "plan"
-        assert "# Plan Mode" in guide["content"]
+        assert "Strategic planning with optional interview workflow" in guide["content"]
+        assert guide["path"] == "my_skills/plan/SKILL.md"
+
+    def test_plan_wrapper(self, mcp_server_e2e, _event_loop):
+        server, _ = mcp_server_e2e
+        result = _run_tool(
+            server,
+            "plan",
+            {
+                "instruction": "Review the MCP prompt-package migration",
+                "mode": "consensus",
+                "interactive": True,
+            },
+        )
+        assert result["success"] is True
+        assert result["skill"] == "plan"
+        assert "--consensus --interactive Review the MCP prompt-package migration" in result["invocation_message"]
+        assert result["source"] == "my_skills/plan"
 
     def test_autopilot_wrapper(self, mcp_server_e2e, _event_loop):
         server, _ = mcp_server_e2e
@@ -1603,6 +1620,16 @@ class TestE2ELearningTools:
         assert result["success"] is True
         assert result["skill"] == "ralplan"
         assert "--interactive --deliberate Plan the MCP wrapper rollout" in result["invocation_message"]
+        assert "Strategic planning with optional interview workflow" in result["invocation_message"]
+        assert "You are Planner (Prometheus)." in result["invocation_message"]
+        assert "You are Architect (Oracle)." in result["invocation_message"]
+        assert "You are Critic." in result["invocation_message"]
+        assert result["included_assets"] == [
+            "my_skills/plan/SKILL.md",
+            "my_skills/ralplan/references/roles/planner.md",
+            "my_skills/ralplan/references/roles/architect.md",
+            "my_skills/ralplan/references/roles/critic.md",
+        ]
 
     def test_init_requires_mcp_roots_when_client_roots_are_unavailable(
         self,

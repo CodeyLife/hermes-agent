@@ -250,6 +250,18 @@ class TestMemoryToolDispatcher:
         result = json.loads(memory_tool(action="add", target="memory", content="via tool", store=store))
         assert result["success"] is True
 
+    def test_add_accepts_memory_md_target_alias(self, store):
+        result = json.loads(memory_tool(action="add", target="memory.md", content="via alias", store=store))
+        assert result["success"] is True
+        assert result["target"] == "memory"
+        assert "via alias" in store.memory_entries
+
+    def test_add_accepts_user_md_target_alias(self, store):
+        result = json.loads(memory_tool(action="add", target="USER.md", content="user alias", store=store))
+        assert result["success"] is True
+        assert result["target"] == "user"
+        assert "user alias" in store.user_entries
+
     def test_replace_requires_old_text(self, store):
         result = json.loads(memory_tool(action="replace", content="new", store=store))
         assert result["success"] is False
@@ -272,3 +284,10 @@ class TestMcpMemoryHelpers:
         monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
         result = memory_write_v1("remove", "memory", "x")
         assert result["success"] is False
+
+    def test_memory_write_v1_accepts_memory_md_target_alias(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        result = memory_write_v1("add", "memories/MEMORY.md", "mcp alias")
+        assert result["success"] is True
+        assert result["target"] == "memory"
+        assert (tmp_path / "MEMORY.md").read_text(encoding="utf-8") == "mcp alias"

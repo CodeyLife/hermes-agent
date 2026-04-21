@@ -48,7 +48,7 @@ def build_trae_project_rules(*, project_name: Optional[str] = None) -> str:
 - [ ] 本次任务是否已完成
 - [ ] 是否存在可复用稳定事实可写入 `memory_write(...)`
 - [ ] 是否存在已验证流程/模式可写入 `skill_create_or_patch(...)`
-- [ ] 若都没有，内部记为“已检查，暂无可沉淀经验”
+- [ ] 若都没有，告知用户“已检查，暂无可沉淀经验”
 """
     if len(content) > 1000:
         raise ValueError(f"Generated rules exceed 1000 characters: {len(content)}")

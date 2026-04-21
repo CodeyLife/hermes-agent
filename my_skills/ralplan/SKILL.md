@@ -41,6 +41,12 @@ $plan --consensus <arguments>
 $plan --consensus --interactive <arguments>
 ```
 
+When invoked through Hermes MCP, the `ralplan` tool returns a self-contained
+prompt package: this skill, the bundled Codex-style `plan` skill, and the
+Planner / Architect / Critic role definitions are included for the MCP host.
+The MCP server does not execute the multi-agent loop internally; the host agent
+must consume the returned `invocation_message` and follow the workflow.
+
 The consensus workflow:
 1. **Planner** creates initial plan and a compact **RALPLAN-DR summary** before review:
    - Principles (3-5)
