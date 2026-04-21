@@ -105,7 +105,7 @@
     "omx-1776671880441-ukd06u": {
       "session_id": "omx-1776671880441-ukd06u",
       "leader_thread_id": "019da9c7-78fa-7032-b938-f575a7967a65",
-      "updated_at": "2026-04-20T09:13:15.144Z",
+      "updated_at": "2026-04-20T09:26:26.041Z",
       "threads": {
         "019da9c7-78fa-7032-b938-f575a7967a65": {
           "thread_id": "019da9c7-78fa-7032-b938-f575a7967a65",
@@ -137,6 +137,29 @@
           "first_seen_at": "2026-04-20T09:13:15.144Z",
           "last_seen_at": "2026-04-20T09:13:15.144Z",
           "last_turn_id": "019daa27-8aa1-7730-bae6-f6b9a294fba3",
+          "turn_count": 1
+        },
+        "019daa34-c897-78c1-8eb1-c0535f8d0277": {
+          "thread_id": "019daa34-c897-78c1-8eb1-c0535f8d0277",
+          "kind": "subagent",
+          "first_seen_at": "2026-04-20T09:25:13.542Z",
+          "last_seen_at": "2026-04-20T09:26:26.041Z",
+          "last_turn_id": "019daa35-e995-7f61-b432-33604713d1b6",
+          "turn_count": 2
+        }
+      }
+    },
+    "omx-1776733599765-v1kt0o": {
+      "session_id": "omx-1776733599765-v1kt0o",
+      "leader_thread_id": "019dad93-3cae-7342-b163-902fc60043a8",
+      "updated_at": "2026-04-21T01:09:23.879Z",
+      "threads": {
+        "019dad93-3cae-7342-b163-902fc60043a8": {
+          "thread_id": "019dad93-3cae-7342-b163-902fc60043a8",
+          "kind": "leader",
+          "first_seen_at": "2026-04-21T01:09:23.879Z",
+          "last_seen_at": "2026-04-21T01:09:23.879Z",
+          "last_turn_id": "019dad93-ca07-70a2-973b-ae21cd178428",
           "turn_count": 1
         }
       }
