@@ -912,6 +912,7 @@ class TestToolRegistration:
             "memory_read", "memory_write", "session_recall_search",
             "skills_list", "skill_view_safe", "skill_create_or_patch",
             "task_context_bundle", "init",
+            "autopilot", "deep_interview", "ralph", "ralplan",
             "plan_skill_read",
         }
         assert expected == tool_names, f"Missing: {expected - tool_names}, Extra: {tool_names - expected}"
@@ -1564,6 +1565,44 @@ class TestE2ELearningTools:
         assert guide["success"] is True
         assert guide["name"] == "plan"
         assert "# Plan Mode" in guide["content"]
+
+    def test_autopilot_wrapper(self, mcp_server_e2e, _event_loop):
+        server, _ = mcp_server_e2e
+        result = _run_tool(server, "autopilot", {"instruction": "Build a release checklist UI"})
+        assert result["success"] is True
+        assert result["skill"] == "autopilot"
+        assert "Build a release checklist UI" in result["invocation_message"]
+        assert "follow its instructions" in result["invocation_message"]
+        assert result["source"] == "my_skills/autopilot"
+
+    def test_deep_interview_wrapper(self, mcp_server_e2e, _event_loop):
+        server, _ = mcp_server_e2e
+        result = _run_tool(
+            server,
+            "deep_interview",
+            {"instruction": "I want a better planning workflow", "depth": "deep", "autoresearch": True},
+        )
+        assert result["success"] is True
+        assert result["skill"] == "deep-interview"
+        assert "--deep --autoresearch I want a better planning workflow" in result["invocation_message"]
+
+    def test_ralph_wrapper(self, mcp_server_e2e, _event_loop):
+        server, _ = mcp_server_e2e
+        result = _run_tool(server, "ralph", {"instruction": "Finish the migration and verify it"})
+        assert result["success"] is True
+        assert result["skill"] == "ralph"
+        assert "Finish the migration and verify it" in result["invocation_message"]
+
+    def test_ralplan_wrapper(self, mcp_server_e2e, _event_loop):
+        server, _ = mcp_server_e2e
+        result = _run_tool(
+            server,
+            "ralplan",
+            {"instruction": "Plan the MCP wrapper rollout", "interactive": True, "deliberate": True},
+        )
+        assert result["success"] is True
+        assert result["skill"] == "ralplan"
+        assert "--interactive --deliberate Plan the MCP wrapper rollout" in result["invocation_message"]
 
     def test_init_requires_mcp_roots_when_client_roots_are_unavailable(
         self,

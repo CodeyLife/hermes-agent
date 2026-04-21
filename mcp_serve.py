@@ -16,6 +16,7 @@ Hermes MCP Server：暴露消息会话与本地学习资产。
   channels_list
   memory_read, memory_write, session_recall_search
   skills_list, skill_view_safe, skill_create_or_patch
+  autopilot, deep_interview, ralph, ralplan
   task_context_bundle, init
   plan_skill_read
 
@@ -55,7 +56,8 @@ MCP_SERVER_INSTRUCTIONS = (
     "Hermes Agent 的 MCP 桥接服务。可使用这些工具跨消息平台访问会话，"
     "并读取 Hermes 的本地学习资产，例如内置记忆、确定性会话回忆和当前"
     "profile 的本地技能。还可初始化 Trae 项目规则、读取 Hermes 内置 /plan skill，"
-    "供 Trae 等客户端自行规划。"
+    "以及把部分内置 workflow skill（autopilot / deep-interview / ralph / ralplan）"
+    "包装成专用 MCP tools，供 Trae 等客户端直接调用。"
 )
 
 # ---------------------------------------------------------------------------
@@ -1406,6 +1408,119 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
             return json.dumps(result, indent=2, ensure_ascii=False)
         except Exception as e:
             return _structured_error(f"Failed to read bundled plan skill: {e}")
+
+    @mcp.tool()
+    def autopilot(
+        instruction: str,
+    ) -> str:
+        """生成 Autopilot 工作流调用指令，用于“从想法到实现”的全自动执行。
+
+        适合用户已经给出一个想做的产品/功能方向，希望宿主客户端进入
+        Hermes 的 autopilot 流程：需求分析、技术设计、规划、实现、测试、
+        验证。
+
+        返回值不会直接在 MCP 服务端执行 workflow，而是返回：
+        - `invocation_message`：应交给 MCP 宿主 agent 的下一条指令
+        - `client_action`：提示客户端如何消费该结果
+
+        Args:
+            instruction: 用户的目标、产品想法或要自动完成的任务描述
+        """
+        try:
+            from tools.mcp_skill_wrappers import autopilot_invocation
+
+            result = autopilot_invocation(instruction)
+            return json.dumps(result, indent=2, ensure_ascii=False)
+        except Exception as e:
+            return _structured_error(f"Failed to build autopilot skill invocation: {e}")
+
+    @mcp.tool()
+    def deep_interview(
+        instruction: str,
+        depth: str = "standard",
+        autoresearch: bool = False,
+    ) -> str:
+        """生成 Deep Interview 工作流调用指令，用于先澄清需求再进入规划/执行。
+
+        适合需求模糊、范围不清、用户强调“不要假设”时使用。该工具会把
+        deep-interview skill 组装成可交给宿主 agent 的下一轮指令，并支持
+        深度等级与 autoresearch 模式。
+
+        返回值不会直接执行访谈，只返回可供宿主 agent 使用的
+        `invocation_message`。
+
+        Args:
+            instruction: 需要澄清的想法、需求或任务描述
+            depth: 访谈深度，支持 `quick`、`standard`、`deep`
+            autoresearch: 是否追加 `--autoresearch` 模式
+        """
+        try:
+            from tools.mcp_skill_wrappers import deep_interview_invocation
+
+            result = deep_interview_invocation(
+                instruction,
+                depth=depth,
+                autoresearch=autoresearch,
+            )
+            return json.dumps(result, indent=2, ensure_ascii=False)
+        except Exception as e:
+            return _structured_error(f"Failed to build deep-interview skill invocation: {e}")
+
+    @mcp.tool()
+    def ralph(
+        instruction: str,
+    ) -> str:
+        """生成 Ralph 持续执行工作流调用指令，用于“持续做直到完成并验证”。
+
+        适合任务已经足够明确，且宿主客户端需要进入 Hermes 的 ralph
+        流程：持续推进、重试、并在结束前要求验证证据。
+
+        返回值不会直接在 MCP 服务端实施修改，而是返回宿主 agent 下一步
+        应执行的 `invocation_message`。
+
+        Args:
+            instruction: 要求 Ralph 持续推进直到完成的任务描述
+        """
+        try:
+            from tools.mcp_skill_wrappers import ralph_invocation
+
+            result = ralph_invocation(instruction)
+            return json.dumps(result, indent=2, ensure_ascii=False)
+        except Exception as e:
+            return _structured_error(f"Failed to build ralph skill invocation: {e}")
+
+    @mcp.tool()
+    def ralplan(
+        instruction: str,
+        interactive: bool = False,
+        deliberate: bool = False,
+    ) -> str:
+        """生成 Ralplan 共识规划工作流调用指令。
+
+        适合在编码前先做高质量方案设计，让宿主客户端进入 Hermes 的
+        `ralplan` 流程，也就是 `$plan --consensus` 的专用包装。可选：
+        - `interactive=true`：在关键节点停下来等待用户反馈
+        - `deliberate=true`：启用高风险任务的深度审议模式
+
+        返回值不会直接产出最终实现，只返回宿主 agent 下一轮应使用的
+        `invocation_message`。
+
+        Args:
+            instruction: 需要进行共识规划的任务描述
+            interactive: 是否启用交互式审议
+            deliberate: 是否启用 deliberate 高风险规划模式
+        """
+        try:
+            from tools.mcp_skill_wrappers import ralplan_invocation
+
+            result = ralplan_invocation(
+                instruction,
+                interactive=interactive,
+                deliberate=deliberate,
+            )
+            return json.dumps(result, indent=2, ensure_ascii=False)
+        except Exception as e:
+            return _structured_error(f"Failed to build ralplan skill invocation: {e}")
 
     # -- permissions_list_open ---------------------------------------------
 
