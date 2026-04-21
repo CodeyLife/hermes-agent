@@ -895,7 +895,7 @@ class TestE2EPermissions:
 
 
 # ---------------------------------------------------------------------------
-# 4. TOOL LISTING — verify all 10 tools are registered
+# 4. TOOL LISTING — verify expected tools are registered
 # ---------------------------------------------------------------------------
 
 class TestToolRegistration:
@@ -912,7 +912,7 @@ class TestToolRegistration:
             "memory_read", "memory_write", "session_recall_search",
             "skills_list", "skill_view_safe", "skill_create_or_patch",
             "task_context_bundle", "init",
-            "plan_skill_read", "plan", "plan_read", "plan_update",
+            "plan_skill_read",
         }
         assert expected == tool_names, f"Missing: {expected - tool_names}, Extra: {tool_names - expected}"
 
@@ -1558,91 +1558,14 @@ class TestE2ELearningTools:
         assert set(init_tool.parameters["properties"]) == {"project_name", "overwrite", "workspace_root"}
         assert "path" not in init_tool.parameters["properties"]
 
-    def test_plan_read_update(self, mcp_server_e2e, _event_loop, tmp_path):
+    def test_plan_skill_read(self, mcp_server_e2e, _event_loop):
         server, _ = mcp_server_e2e
-        ctx = _context_with_roots(tmp_path)
         guide = _run_tool(server, "plan_skill_read")
         assert guide["success"] is True
         assert guide["name"] == "plan"
         assert "# Plan Mode" in guide["content"]
 
-        created = _run_tool(
-            server,
-            "plan",
-            {
-                "task": "Add FastMCP planner executor workflow",
-                "goal": "Expose lightweight planning guidance and plan tools.",
-                "steps": [
-                    "Inspect current FastMCP surfaces",
-                    "Add plan storage helpers",
-                    "Simplify Trae workflow guidance",
-                ],
-                "files": ["mcp_serve.py", "tools/plan_tool.py", "TRAE_MCP_SYSTEM_PROMPT_CN.md"],
-                "tests": ["scripts/run_tests.sh tests/test_mcp_serve.py"],
-            },
-            context=ctx,
-        )
-        assert created["success"] is True
-        assert created["path"].startswith(".hermes/plans/")
-
-        read_back = _run_tool(
-            server,
-            "plan_read",
-            {"path": created["path"]},
-            context=ctx,
-        )
-        assert read_back["success"] is True
-        assert "Add FastMCP planner executor workflow" in read_back["content"]
-
-        updated = _run_tool(
-            server,
-            "plan_update",
-            {
-                "path": created["path"],
-                "content": "# Updated plan\n\n## Step-by-step plan\n\n- Do the thing\n",
-            },
-            context=ctx,
-        )
-        assert updated["success"] is True
-
-        latest = _run_tool(server, "plan_read", {"latest": True}, context=ctx)
-        assert latest["success"] is True
-        assert latest["content"].startswith("# Updated plan")
-
-    def test_plan_tools_prefer_client_root_over_server_cwd(self, mcp_server_e2e, _event_loop, tmp_path, monkeypatch):
-        server, _ = mcp_server_e2e
-        server_repo_dir = tmp_path / "server-repo"
-        client_project_dir = tmp_path / "client-project"
-        server_repo_dir.mkdir()
-        client_project_dir.mkdir()
-        monkeypatch.chdir(server_repo_dir)
-        ctx = _context_with_roots(client_project_dir)
-
-        created = _run_tool(
-            server,
-            "plan",
-            {"task": "Client rooted plan", "steps": ["Use client root"]},
-            context=ctx,
-        )
-        expected_dir = client_project_dir / ".hermes" / "plans"
-        assert Path(created["absolute_path"]).parent == expected_dir
-        assert expected_dir.exists()
-        assert not (server_repo_dir / ".hermes" / "plans").exists()
-
-        read_back = _run_tool(server, "plan_read", {"path": created["path"]}, context=ctx)
-        assert read_back["success"] is True
-        assert read_back["absolute_path"] == created["absolute_path"]
-
-        updated = _run_tool(
-            server,
-            "plan_update",
-            {"path": created["path"], "content": "# Client rooted plan\n"},
-            context=ctx,
-        )
-        assert updated["success"] is True
-        assert Path(updated["absolute_path"]) == Path(created["absolute_path"])
-
-    def test_project_artifact_tools_require_mcp_roots_when_client_roots_are_unavailable(
+    def test_init_requires_mcp_roots_when_client_roots_are_unavailable(
         self,
         mcp_server_e2e,
         _event_loop,
@@ -1656,9 +1579,6 @@ class TestE2ELearningTools:
 
         calls = [
             ("init", {"project_name": "Missing MCP Roots"}),
-            ("plan", {"task": "Missing MCP Roots"}),
-            ("plan_read", {"latest": True}),
-            ("plan_update", {"path": ".hermes/plans/missing.md", "content": "# Missing\n"}),
         ]
         for name, args in calls:
             result = _run_tool(server, name, args)
@@ -1668,7 +1588,7 @@ class TestE2ELearningTools:
         assert not (server_repo_dir / ".hermes" / "plans").exists()
         assert not (server_repo_dir / ".trae" / "rules").exists()
 
-    def test_project_artifact_tools_reject_ambiguous_mcp_roots(
+    def test_init_rejects_ambiguous_mcp_roots(
         self,
         mcp_server_e2e,
         _event_loop,
@@ -1682,15 +1602,15 @@ class TestE2ELearningTools:
 
         result = _run_tool(
             server,
-            "plan",
-            {"task": "Ambiguous roots"},
+            "init",
+            {"project_name": "Ambiguous roots"},
             context=_context_with_roots(first_project_dir, second_project_dir),
         )
 
         assert result["success"] is False
         assert "Exactly one MCP Root is required" in result["error"]
-        assert not (first_project_dir / ".hermes" / "plans").exists()
-        assert not (second_project_dir / ".hermes" / "plans").exists()
+        assert not (first_project_dir / ".trae").exists()
+        assert not (second_project_dir / ".trae").exists()
 
 
 # ---------------------------------------------------------------------------

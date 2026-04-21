@@ -17,7 +17,7 @@ Hermes MCP Server：暴露消息会话与本地学习资产。
   memory_read, memory_write, session_recall_search
   skills_list, skill_view_safe, skill_create_or_patch
   task_context_bundle, init
-  plan_skill_read, plan, plan_read, plan_update
+  plan_skill_read
 
 用法：
     hermes mcp serve
@@ -55,7 +55,7 @@ MCP_SERVER_INSTRUCTIONS = (
     "Hermes Agent 的 MCP 桥接服务。可使用这些工具跨消息平台访问会话，"
     "并读取 Hermes 的本地学习资产，例如内置记忆、确定性会话回忆和当前"
     "profile 的本地技能。还可初始化 Trae 项目规则、读取 Hermes 内置 /plan skill，"
-    "并在当前工作区维护 plan 产物，支撑 Trae 等客户端的轻量 planner-executor 工作流。"
+    "供 Trae 等客户端自行规划。"
 )
 
 # ---------------------------------------------------------------------------
@@ -1373,7 +1373,6 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
         默认只写入 `.trae/rules/hermes-mcp-workflow.md`。规则会要求 Trae：
         - 复杂任务先做 Hermes 检索
         - 必要时读取 plan skill
-        - 计划完成后写入 plan
         - 任务完成后检查 memory_write / skill_create_or_patch
         """
         try:
@@ -1407,89 +1406,6 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
             return json.dumps(result, indent=2, ensure_ascii=False)
         except Exception as e:
             return _structured_error(f"Failed to read bundled plan skill: {e}")
-
-    @mcp.tool()
-    async def plan(
-        task: str,
-        goal: Optional[str] = None,
-        context: Optional[List[str]] = None,
-        approach: Optional[List[str]] = None,
-        steps: Optional[List[str]] = None,
-        files: Optional[List[str]] = None,
-        tests: Optional[List[str]] = None,
-        risks: Optional[List[str]] = None,
-        content: Optional[str] = None,
-        ctx: Optional["Context"] = None,
-    ) -> str:
-        """在调用方项目根目录的 .hermes/plans 下创建 markdown plan。
-
-        该工具是确定性的计划产物存储层，不会调用 Hermes 自身的 LLM 或 /plan 技能。
-        建议由 Trae 先自行规划，再将最终计划写入该工具。
-        """
-        try:
-            from tools.plan_tool import create_plan
-
-            workspace_root = await _resolve_workspace_root(
-                ctx,
-                require_client_root=True,
-            )
-            result = create_plan(
-                task=task,
-                goal=goal,
-                context=context,
-                approach=approach,
-                steps=steps,
-                files=files,
-                tests=tests,
-                risks=risks,
-                content=content,
-                workspace_root=workspace_root,
-            )
-            return json.dumps(result, indent=2, ensure_ascii=False)
-        except Exception as e:
-            return _structured_error(f"Failed to create plan: {e}")
-
-    # -- plan_read ---------------------------------------------------------
-
-    @mcp.tool()
-    async def plan_read(
-        path: Optional[str] = None,
-        latest: bool = False,
-        ctx: Optional["Context"] = None,
-    ) -> str:
-        """读取调用方项目根目录 .hermes/plans 下的某个计划文件。"""
-        try:
-            from tools.plan_tool import read_plan
-
-            workspace_root = await _resolve_workspace_root(
-                ctx,
-                require_client_root=True,
-            )
-            result = read_plan(path=path, latest=latest, workspace_root=workspace_root)
-            return json.dumps(result, indent=2, ensure_ascii=False)
-        except Exception as e:
-            return _structured_error(f"Failed to read plan: {e}")
-
-    # -- plan_update -------------------------------------------------------
-
-    @mcp.tool()
-    async def plan_update(
-        path: str,
-        content: str,
-        ctx: Optional["Context"] = None,
-    ) -> str:
-        """覆盖更新一个已有计划文件的完整内容。"""
-        try:
-            from tools.plan_tool import update_plan
-
-            workspace_root = await _resolve_workspace_root(
-                ctx,
-                require_client_root=True,
-            )
-            result = update_plan(path=path, content=content, workspace_root=workspace_root)
-            return json.dumps(result, indent=2, ensure_ascii=False)
-        except Exception as e:
-            return _structured_error(f"Failed to update plan: {e}")
 
     # -- permissions_list_open ---------------------------------------------
 
