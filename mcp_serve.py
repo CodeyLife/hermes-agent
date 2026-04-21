@@ -1012,7 +1012,29 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
             )
 
         try:
-            from tools.memory_tool import memory_write_v1
+            from tools.knowledge_quality import (
+                blocked_result,
+                evaluate_memory_write,
+                record_quality_metadata,
+                should_allow_write,
+            )
+            from tools.memory_tool import memory_write_v1, read_live_memory_state
+
+            memory_state = read_live_memory_state()
+            existing_entries = memory_state.get(target, [])
+            quality_gate = evaluate_memory_write(
+                action=action,
+                target=target,
+                content=content,
+                old_text=old_text,
+                existing_entries=existing_entries,
+            )
+            if not should_allow_write(quality_gate):
+                return json.dumps(
+                    blocked_result(quality_gate),
+                    indent=2,
+                    ensure_ascii=False,
+                )
 
             result = memory_write_v1(
                 action=action,
@@ -1020,6 +1042,14 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
                 content=content,
                 old_text=old_text,
             )
+            result["quality_gate"] = quality_gate
+            if result.get("success"):
+                record_quality_metadata(
+                    "memory",
+                    {"target": target, "action": action},
+                    content,
+                    quality_gate,
+                )
             return json.dumps(result, indent=2, ensure_ascii=False)
         except Exception as e:
             return _structured_error(f"Failed to write memory: {e}")
@@ -1084,10 +1114,65 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
         replace_all: bool = False,
     ) -> str:
         """创建新技能，或仅对 SKILL.md 内容进行补丁修改。"""
+        if action not in {"create", "patch"}:
+            try:
+                from tools.skill_manager_tool import skill_create_or_patch_v1
+
+                return skill_create_or_patch_v1(
+                    action=action,
+                    name=name,
+                    content=content,
+                    category=category,
+                    old_string=old_string,
+                    new_string=new_string,
+                    replace_all=replace_all,
+                )
+            except Exception as e:
+                return _structured_error(f"Failed to create or patch local skill: {e}")
+
         try:
+            from tools.knowledge_quality import (
+                blocked_result,
+                evaluate_skill_change,
+                record_quality_metadata,
+                should_allow_write,
+            )
+            from tools.fuzzy_match import fuzzy_find_and_replace
+            from tools.skills_tool import local_skill_view_safe
             from tools.skill_manager_tool import skill_create_or_patch_v1
 
-            return skill_create_or_patch_v1(
+            gate_action = action
+            gate_content = content
+            if action == "patch":
+                viewed = local_skill_view_safe(name=name)
+                existing_content = viewed.get("content") if viewed.get("success") else None
+                if isinstance(existing_content, str) and old_string is not None and new_string is not None:
+                    projected_content, _match_count, _strategy, match_error = fuzzy_find_and_replace(
+                        existing_content,
+                        old_string,
+                        new_string,
+                        replace_all,
+                    )
+                    if not match_error:
+                        gate_content = projected_content
+                        gate_action = "edit"
+
+            quality_gate = evaluate_skill_change(
+                action=gate_action,
+                name=name,
+                content=gate_content,
+                old_string=old_string,
+                new_string=new_string,
+                file_content=None,
+            )
+            if not should_allow_write(quality_gate):
+                return json.dumps(
+                    blocked_result(quality_gate),
+                    indent=2,
+                    ensure_ascii=False,
+                )
+
+            raw_result = skill_create_or_patch_v1(
                 action=action,
                 name=name,
                 content=content,
@@ -1096,6 +1181,25 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
                 new_string=new_string,
                 replace_all=replace_all,
             )
+            try:
+                result = json.loads(raw_result) if isinstance(raw_result, str) else raw_result
+            except json.JSONDecodeError:
+                return raw_result
+            if isinstance(result, dict):
+                result["quality_gate"] = quality_gate
+                if result.get("success"):
+                    skill_content = content if content is not None else (new_string or "")
+                    viewed = local_skill_view_safe(name=name)
+                    if viewed.get("success") and viewed.get("content"):
+                        skill_content = viewed["content"]
+                    record_quality_metadata(
+                        "skill",
+                        {"name": name, "action": action, "file_path": "SKILL.md"},
+                        skill_content,
+                        quality_gate,
+                    )
+                return json.dumps(result, indent=2, ensure_ascii=False)
+            return raw_result
         except Exception as e:
             return _structured_error(f"Failed to create or patch local skill: {e}")
 
@@ -1122,10 +1226,16 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
         skill_limit = _clamp(skill_limit, default=5, minimum=1, maximum=5)
 
         try:
+            from tools.knowledge_quality import (
+                audit_due_knowledge,
+                filter_memory_entries,
+                filter_skill_candidates,
+            )
             from tools.memory_tool import read_live_memory_state
             from tools.skills_tool import local_skills_list
 
             memory_state = read_live_memory_state()
+            quality_audit = audit_due_knowledge()
             session_result = _deterministic_session_recall_search(
                 _get_session_db(),
                 query=query,
@@ -1142,18 +1252,39 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
             hints = [
                 "可使用 skill_view_safe(name=...) 查看候选技能的完整内容。",
                 "可使用 session_recall_search(query=...) 做更聚焦的后续会话回忆检索。",
-                "开始规划前，先调用 plan_skill_read()， 读取 /plan skill。",
-                "形成明确方案后调用 plan(...)落盘；落盘；任务完成后仅在内容可复用时再考虑调用 memory_write(...) 或 skill_create_or_patch(...)。",
+                "如需按 Hermes 原生 /plan 风格规划，可先调用 plan_skill_read()。",
+                "确定方案后调用 plan(...)；任务完成后考虑调用 memory_write(...) 或 skill_create_or_patch(...)。",
             ]
+
+            memory_entries, memory_quality = filter_memory_entries(
+                memory_state.get("memory", []),
+                "memory",
+                quality_audit,
+            )
+            user_entries, user_quality = filter_memory_entries(
+                memory_state.get("user", []),
+                "user",
+                quality_audit,
+            )
+            skill_candidates, skill_quality = filter_skill_candidates(
+                skill_candidates,
+                quality_audit,
+            )
 
             bundle = {
                 "success": True,
                 "query": query,
-                "memory": memory_state.get("memory", [])[-memory_limit:],
-                "user": memory_state.get("user", [])[-memory_limit:],
+                "memory": memory_entries[-memory_limit:],
+                "user": user_entries[-memory_limit:],
                 "session_hits": session_result.get("results", [])[:session_limit],
                 "skill_candidates": skill_candidates,
                 "hints": hints,
+                "quality_audit": quality_audit,
+                "quality_filter": {
+                    "memory": memory_quality,
+                    "user": user_quality,
+                    "skills": skill_quality,
+                },
             }
             return json.dumps(bundle, indent=2, ensure_ascii=False)
         except Exception as e:

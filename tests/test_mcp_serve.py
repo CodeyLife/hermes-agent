@@ -940,6 +940,7 @@ class TestE2ELearningTools:
         )
         assert add_result["success"] is True
         assert "new durable fact" in add_result["entries"]
+        assert add_result["quality_gate"]["decision"] in {"pass", "warn"}
 
         replace_result = _run_tool(
             server,
@@ -953,6 +954,37 @@ class TestE2ELearningTools:
         )
         assert replace_result["success"] is True
         assert "updated durable fact" in replace_result["entries"]
+        assert replace_result["quality_gate"]["decision"] in {"pass", "warn"}
+
+    def test_memory_write_quality_gate_blocks_temporary_speculation(self, mcp_server_e2e, _event_loop):
+        server, _ = mcp_server_e2e
+        result = _run_tool(
+            server,
+            "memory_write",
+            {
+                "action": "add",
+                "target": "memory",
+                "content": "Maybe this temporary workaround works for this task only.",
+            },
+        )
+        assert result["success"] is False
+        assert result["quality_gate"]["decision"] == "block"
+        assert "temporary" in " ".join(result["quality_gate"]["reasons"]).lower()
+
+    def test_memory_write_quality_gate_suggests_replace_for_conflict(self, mcp_server_e2e, _event_loop):
+        server, _ = mcp_server_e2e
+        result = _run_tool(
+            server,
+            "memory_write",
+            {
+                "action": "add",
+                "target": "memory",
+                "content": "Project tests must not use pytest.",
+            },
+        )
+        assert result["success"] is False
+        assert result["quality_gate"]["decision"] == "suggest_replace"
+        assert result["quality_gate"]["conflict_type"] == "conflict"
 
     def test_memory_write_remove_rejected(self, mcp_server_e2e, _event_loop):
         server, _ = mcp_server_e2e
@@ -1009,10 +1041,17 @@ class TestE2ELearningTools:
                 "action": "create",
                 "name": "new-skill",
                 "category": "python",
-                "content": "---\nname: new-skill\ndescription: New skill.\n---\n\n# New\n",
+                "content": (
+                    "---\nname: new-skill\ndescription: New skill.\n---\n\n"
+                    "# New\n\n"
+                    "## Use_When\nUse when a verified reusable workflow is needed.\n\n"
+                    "## Steps\n1. Follow the verified process.\n\n"
+                    "## Verification\nRun the relevant tests.\n"
+                ),
             },
         )
         assert create["success"] is True
+        assert create["quality_gate"]["decision"] in {"pass", "warn"}
 
         patch = _run_tool(
             server,
@@ -1025,6 +1064,7 @@ class TestE2ELearningTools:
             },
         )
         assert patch["success"] is True
+        assert patch["quality_gate"]["decision"] in {"pass", "warn"}
 
         forbidden = _run_tool(
             server,
@@ -1040,6 +1080,99 @@ class TestE2ELearningTools:
                 {"action": action, "name": "new-skill"},
             )
             assert forbidden["success"] is False
+            assert "Unsupported action" in forbidden["error"]
+
+    def test_skill_create_or_patch_quality_gate_blocks_missing_frontmatter(self, mcp_server_e2e, _event_loop):
+        server, _ = mcp_server_e2e
+        result = _run_tool(
+            server,
+            "skill_create_or_patch",
+            {
+                "action": "create",
+                "name": "bad-skill",
+                "content": "# Bad Skill\n\nSome notes without required frontmatter.",
+            },
+        )
+        assert result["success"] is False
+        assert result["quality_gate"]["decision"] == "block"
+        assert any("frontmatter" in reason.lower() for reason in result["quality_gate"]["reasons"])
+
+    def test_skill_create_or_patch_quality_gate_blocks_missing_reusable_structure(self, mcp_server_e2e, _event_loop):
+        server, _ = mcp_server_e2e
+        result = _run_tool(
+            server,
+            "skill_create_or_patch",
+            {
+                "action": "create",
+                "name": "thin-skill",
+                "content": "---\nname: thin-skill\ndescription: Thin skill.\n---\n\n# Thin\n\nSome durable notes.",
+            },
+        )
+        assert result["success"] is False
+        assert result["quality_gate"]["decision"] == "block"
+        assert any("structure" in reason.lower() for reason in result["quality_gate"]["reasons"])
+
+    def test_skill_patch_quality_gate_blocks_removing_required_structure(self, mcp_server_e2e, _event_loop):
+        server, _ = mcp_server_e2e
+        skill_content = (
+            "---\nname: patch-guard\ndescription: Patch guard skill.\n---\n\n"
+            "# Patch Guard\n\n"
+            "## Use_When\nUse when testing patch safety.\n\n"
+            "## Steps\n1. Keep structure intact.\n\n"
+            "## Verification\nRun tests.\n"
+        )
+        create = _run_tool(
+            server,
+            "skill_create_or_patch",
+            {"action": "create", "name": "patch-guard", "content": skill_content},
+        )
+        assert create["success"] is True
+
+        result = _run_tool(
+            server,
+            "skill_create_or_patch",
+            {
+                "action": "patch",
+                "name": "patch-guard",
+                "old_string": "## Steps\n1. Keep structure intact.\n\n## Verification\nRun tests.\n",
+                "new_string": "",
+            },
+        )
+        assert result["success"] is False
+        assert result["quality_gate"]["decision"] == "block"
+        assert any("structure" in reason.lower() for reason in result["quality_gate"]["reasons"])
+
+    def test_skill_patch_quality_gate_projects_fuzzy_match_before_scoring(self, mcp_server_e2e, _event_loop):
+        server, _ = mcp_server_e2e
+        skill_content = (
+            "---\nname: fuzzy-patch-guard\ndescription: Fuzzy patch guard skill.\n---\n\n"
+            "# Fuzzy Patch Guard\n\n"
+            "## Use_When\nUse when testing fuzzy patch safety.\n\n"
+            "## Steps\n1. Keep structure intact.\n\n"
+            "## Verification\nRun tests.\n"
+        )
+        create = _run_tool(
+            server,
+            "skill_create_or_patch",
+            {"action": "create", "name": "fuzzy-patch-guard", "content": skill_content},
+        )
+        assert create["success"] is True
+
+        result = _run_tool(
+            server,
+            "skill_create_or_patch",
+            {
+                "action": "patch",
+                "name": "fuzzy-patch-guard",
+                # Deliberately include boundary whitespace drift; production
+                # patching can still match this via line-trimmed fuzzy matching.
+                "old_string": "## Steps\n1. Keep structure intact.\n\n## Verification\nRun tests.   ",
+                "new_string": "",
+            },
+        )
+        assert result["success"] is False
+        assert result["quality_gate"]["decision"] == "block"
+        assert any("structure" in reason.lower() for reason in result["quality_gate"]["reasons"])
 
     def test_task_context_bundle(self, mcp_server_e2e, _event_loop, monkeypatch):
         server, _ = mcp_server_e2e
@@ -1057,6 +1190,139 @@ class TestE2ELearningTools:
             "如需按 Hermes 原生 /plan 风格规划，可先调用 plan_skill_read()。",
             "确定方案后调用 plan(...)；任务完成后考虑调用 memory_write(...) 或 skill_create_or_patch(...)。",
         ]
+        assert "quality_audit" in result
+        assert "quality_filter" in result
+
+        second = _run_tool(server, "task_context_bundle", {"query": "fastmcp"})
+        assert second["success"] is True
+        assert second["quality_audit"]["ran"] is False
+
+    def test_task_context_bundle_filters_stale_quality_metadata(self, mcp_server_e2e, _event_loop, monkeypatch):
+        server, _ = mcp_server_e2e
+        monkeypatch.setattr("tools.session_search_tool.async_call_llm", lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not call llm")))
+
+        from tools.knowledge_quality import (
+            isoformat,
+            memory_item_key,
+            save_quality_index,
+            utc_now,
+        )
+
+        old_entry = "fastmcp server already exists"
+        key = memory_item_key("memory", old_entry)
+        save_quality_index(
+            {
+                "version": 1,
+                "last_audit_at": None,
+                "items": {
+                    key: {
+                        "kind": "memory",
+                        "target": "memory",
+                        "content_hash": key.rsplit(":", 1)[-1],
+                        "status": "active",
+                        "score": 80,
+                        "scores": {},
+                        "created_at": isoformat(utc_now()),
+                        "last_verified_at": isoformat(utc_now()),
+                        "review_after": "2000-01-01T00:00:00Z",
+                        "expires_at": "2000-01-01T00:00:00Z",
+                    }
+                },
+            }
+        )
+
+        result = _run_tool(server, "task_context_bundle", {"query": "fastmcp", "memory_limit": 5})
+        assert result["success"] is True
+        assert old_entry not in result["memory"]
+        assert result["quality_audit"]["ran"] is True
+        assert result["quality_audit"]["stale_count"] >= 1
+
+    def test_task_context_bundle_filters_stale_skill_metadata(self, mcp_server_e2e, _event_loop, monkeypatch):
+        server, _ = mcp_server_e2e
+        monkeypatch.setattr("tools.session_search_tool.async_call_llm", lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not call llm")))
+
+        from tools.knowledge_quality import (
+            content_hash,
+            isoformat,
+            save_quality_index,
+            skill_item_key,
+            utc_now,
+        )
+
+        skill_content = "fastmcp-helper stale metadata"
+        key = skill_item_key("fastmcp-helper", "SKILL.md", skill_content)
+        save_quality_index(
+            {
+                "version": 1,
+                "last_audit_at": None,
+                "items": {
+                    key: {
+                        "kind": "skill",
+                        "name": "fastmcp-helper",
+                        "file_path": "SKILL.md",
+                        "content_hash": content_hash(skill_content),
+                        "status": "active",
+                        "score": 80,
+                        "scores": {},
+                        "created_at": isoformat(utc_now()),
+                        "last_verified_at": isoformat(utc_now()),
+                        "review_after": "2000-01-01T00:00:00Z",
+                        "expires_at": "2000-01-01T00:00:00Z",
+                    }
+                },
+            }
+        )
+
+        result = _run_tool(server, "task_context_bundle", {"query": "fastmcp", "skill_limit": 5})
+        assert result["success"] is True
+        assert all(skill["name"] != "fastmcp-helper" for skill in result["skill_candidates"])
+        assert result["quality_filter"]["skills"]["excluded_from_bundle"] >= 1
+
+    def test_task_context_bundle_prefers_active_skill_metadata_over_stale_history(self, mcp_server_e2e, _event_loop, monkeypatch):
+        server, _ = mcp_server_e2e
+        monkeypatch.setattr("tools.session_search_tool.async_call_llm", lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not call llm")))
+
+        from tools.knowledge_quality import (
+            content_hash,
+            save_quality_index,
+            skill_item_key,
+        )
+
+        stale_content = "fastmcp-helper stale metadata"
+        active_content = "fastmcp-helper active metadata"
+        stale_key = skill_item_key("fastmcp-helper", "SKILL.md", stale_content)
+        active_key = skill_item_key("fastmcp-helper", "SKILL.md", active_content)
+        save_quality_index(
+            {
+                "version": 1,
+                "last_audit_at": "2026-04-21T00:00:00Z",
+                "items": {
+                    active_key: {
+                        "kind": "skill",
+                        "name": "fastmcp-helper",
+                        "file_path": "SKILL.md",
+                        "content_hash": content_hash(active_content),
+                        "status": "active",
+                        "score": 90,
+                        "created_at": "2026-04-21T00:00:00Z",
+                    },
+                    stale_key: {
+                        "kind": "skill",
+                        "name": "fastmcp-helper",
+                        "file_path": "SKILL.md",
+                        "content_hash": content_hash(stale_content),
+                        "status": "stale",
+                        "score": 50,
+                        "created_at": "2026-04-20T00:00:00Z",
+                    },
+                },
+            }
+        )
+
+        result = _run_tool(server, "task_context_bundle", {"query": "fastmcp", "skill_limit": 5})
+        assert result["success"] is True
+        assert any(skill["name"] == "fastmcp-helper" for skill in result["skill_candidates"])
+        assert result["quality_filter"]["skills"]["excluded_from_bundle"] == 0
 
     def test_init_writes_trae_project_rules(self, mcp_server_e2e, _event_loop):
         server, _ = mcp_server_e2e

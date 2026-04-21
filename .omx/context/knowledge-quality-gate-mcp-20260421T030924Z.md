@@ -1,0 +1,21 @@
+# Ralph Context Snapshot: knowledge-quality-gate-mcp
+
+- task statement: Execute `.omx/plans/plan-knowledge-quality-gate-mcp.md`: add MCP knowledge quality gate for memory/skill writes and freshness audit in task_context_bundle.
+- desired outcome: Implement MVP with deterministic scoring, profile-scoped quality metadata, write-time gating, daily audit/filtering, tests passing.
+- known facts/evidence:
+  - `mcp_serve.py` defines MCP `memory_write`, `skill_create_or_patch`, and `task_context_bundle`.
+  - `tools/memory_tool.py` provides `memory_write_v1` and live memory state.
+  - `tools/skill_manager_tool.py` implements skill write operations with validation/security scanning.
+  - Plan file: `.omx/plans/plan-knowledge-quality-gate-mcp.md`.
+- constraints:
+  - No new dependencies.
+  - Preserve MCP tool names and additive-compatible return fields.
+  - Use `get_hermes_home()` for profile-scoped runtime state.
+  - Tests via `scripts/run_tests.sh` per repo policy.
+- unknowns/open questions:
+  - Exact test harness APIs in `tests/test_mcp_serve.py`; inspect before test edits.
+  - Whether `docs/shared/agent-tiers.md` exists; checked and missing, proceed with built-in tier judgment.
+- likely codebase touchpoints:
+  - `mcp_serve.py`
+  - `tools/knowledge_quality.py` (new)
+  - `tests/test_mcp_serve.py` and/or new `tests/test_knowledge_quality.py`
