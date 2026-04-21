@@ -1,0 +1,17 @@
+{
+  "active": true,
+  "mode": "ralph",
+  "current_phase": "starting",
+  "started_at": "2026-04-21T03:51:27.297Z",
+  "updated_at": "2026-04-21T03:51:27.297Z",
+  "session_id": "omx-1776733599765-v1kt0o",
+  "thread_id": "019dadf1-46d8-70e1-933d-74f7e1f51f95",
+  "turn_id": "019dae03-2bcc-7362-99e4-ca4c9ea40e1f",
+  "iteration": 20,
+  "max_iterations": 30,
+  "owner_omx_session_id": "omx-1776760534035-aj37hk",
+  "owner_codex_thread_id": "019daf3c-0756-7a30-bbfa-a0c1914b3f91",
+  "last_turn_at": "2026-04-21T08:59:26.933Z",
+  "max_iterations_auto_expand_count": 2,
+  "max_iterations_auto_expanded_at": "2026-04-21T08:59:26.933Z"
+}

@@ -555,6 +555,13 @@ def _context_with_roots(*roots: Path):
     return SimpleNamespace(session=SimpleNamespace(list_roots=_list_roots))
 
 
+def _context_with_failing_roots(exc: Exception | None = None):
+    async def _list_roots():
+        raise exc or RuntimeError("roots unavailable")
+
+    return SimpleNamespace(session=SimpleNamespace(list_roots=_list_roots))
+
+
 @pytest.fixture
 def _event_loop():
     """Ensure an event loop exists for sync tests calling async tools."""
@@ -1179,16 +1186,21 @@ class TestE2ELearningTools:
         monkeypatch.setattr("tools.session_search_tool.async_call_llm", lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not call llm")))
         result = _run_tool(server, "task_context_bundle", {"query": "fastmcp"})
         assert result["success"] is True
+        assert Path(result["resolved_project_root"]) == Path.cwd()
         assert len(result["memory"]) <= 5
         assert len(result["user"]) <= 5
         assert len(result["session_hits"]) <= 5
+        assert result["session_recall_status"] == {
+            "success": True,
+            "available": True,
+            "count": len(result["session_hits"]),
+        }
         assert len(result["skill_candidates"]) <= 5
         assert all("content" not in skill for skill in result["skill_candidates"])
         assert result["hints"] == [
             "可使用 skill_view_safe(name=...) 查看候选技能的完整内容。",
             "可使用 session_recall_search(query=...) 做更聚焦的后续会话回忆检索。",
-            "如需按 Hermes 原生 /plan 风格规划，可先调用 plan_skill_read()。",
-            "确定方案后调用 plan(...)；任务完成后考虑调用 memory_write(...) 或 skill_create_or_patch(...)。",
+            "任务完成沉淀经验可 考虑调用 memory_write(...) 或 skill_create_or_patch(...)。",
         ]
         assert "quality_audit" in result
         assert "quality_filter" in result
@@ -1196,6 +1208,46 @@ class TestE2ELearningTools:
         second = _run_tool(server, "task_context_bundle", {"query": "fastmcp"})
         assert second["success"] is True
         assert second["quality_audit"]["ran"] is False
+
+    def test_task_context_bundle_allows_empty_session_recall(self, mcp_server_e2e, _event_loop, monkeypatch):
+        server, _ = mcp_server_e2e
+        monkeypatch.setattr("tools.session_search_tool.async_call_llm", lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not call llm")))
+
+        result = _run_tool(server, "task_context_bundle", {"query": "definitely-no-session-hit"})
+
+        assert result["success"] is True, result
+        assert Path(result["resolved_project_root"]) == Path.cwd()
+        assert result["session_hits"] == []
+        assert result["session_recall_status"] == {
+            "success": True,
+            "available": True,
+            "count": 0,
+        }
+        assert "memory" in result
+        assert "user" in result
+        assert "skill_candidates" in result
+
+    def test_task_context_bundle_degrades_when_session_db_unavailable(self, mcp_server_e2e, _event_loop, monkeypatch):
+        import mcp_serve
+
+        server, _ = mcp_server_e2e
+        monkeypatch.setattr("tools.session_search_tool.async_call_llm", lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not call llm")))
+        monkeypatch.setattr(mcp_serve, "_get_session_db", lambda: None)
+
+        result = _run_tool(server, "task_context_bundle", {"query": "fastmcp"})
+
+        assert result["success"] is True
+        assert Path(result["resolved_project_root"]) == Path.cwd()
+        assert result["session_hits"] == []
+        assert result["session_recall_status"] == {
+            "success": False,
+            "available": False,
+            "count": 0,
+            "error": "Session database unavailable",
+        }
+        assert "memory" in result
+        assert "user" in result
+        assert "skill_candidates" in result
 
     def test_task_context_bundle_filters_stale_quality_metadata(self, mcp_server_e2e, _event_loop, monkeypatch):
         server, _ = mcp_server_e2e
@@ -1324,22 +1376,54 @@ class TestE2ELearningTools:
         assert any(skill["name"] == "fastmcp-helper" for skill in result["skill_candidates"])
         assert result["quality_filter"]["skills"]["excluded_from_bundle"] == 0
 
-    def test_init_writes_trae_project_rules(self, mcp_server_e2e, _event_loop):
+    def test_task_context_bundle_uses_client_root_when_available(self, mcp_server_e2e, _event_loop, tmp_path, monkeypatch):
         server, _ = mcp_server_e2e
-        result = _run_tool(server, "init", {"project_name": "Hermes FastMCP", "overwrite": True})
-        assert result["success"] is True
-        assert result["created"] is True
-        assert result["path"] == ".trae/rules/hermes-mcp-workflow.md"
-        assert "task_context_bundle(...)" in result["content"]
-        assert "memory_write(...)" in result["content"]
-        assert "skill_create_or_patch(...)" in result["content"]
-        assert "必须" in result["content"]
-        assert "默认不写入记忆或技能" in result["content"]
-        assert len(result["content"]) <= 1000
+        server_repo_dir = tmp_path / "server-repo"
+        client_project_dir = tmp_path / "client-project"
+        server_repo_dir.mkdir()
+        client_project_dir.mkdir()
+        monkeypatch.chdir(server_repo_dir)
+        monkeypatch.setattr("tools.session_search_tool.async_call_llm", lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not call llm")))
 
-        rule_file = Path(result["absolute_path"])
+        result = _run_tool(
+            server,
+            "task_context_bundle",
+            {"query": "fastmcp"},
+            context=_context_with_roots(client_project_dir),
+        )
+
+        assert result["success"] is True
+        assert Path(result["resolved_project_root"]) == client_project_dir
+
+    def test_init_writes_trae_project_rules(self, mcp_server_e2e, _event_loop, tmp_path):
+        server, _ = mcp_server_e2e
+        ctx = _context_with_roots(tmp_path)
+        result = _run_tool(
+            server,
+            "init",
+            {
+                "project_name": "Hermes FastMCP",
+                "overwrite": True,
+            },
+            context=ctx,
+        )
+        assert result["success"] is True
+        assert result["workspace_root"] == str(tmp_path)
+        assert result["rules"]["created"] is True
+        assert result["rules"]["path"] == ".trae/rules/hermes-mcp-workflow.md"
+        assert "task_context_bundle(...)" in result["rules"]["content"]
+        assert "memory_write(...)" in result["rules"]["content"]
+        assert "skill_create_or_patch(...)" in result["rules"]["content"]
+        assert "必须" in result["rules"]["content"]
+        assert "已检查，暂无可沉淀经验" in result["rules"]["content"]
+        assert len(result["rules"]["content"]) <= 1000
+        assert "mcp_config" not in result
+        assert "no project-local mcp.json was generated" in result["message"]
+
+        rule_file = Path(result["rules"]["absolute_path"])
         assert rule_file.exists()
         assert "plan_skill_read()" in rule_file.read_text(encoding="utf-8")
+        assert not (tmp_path / ".trae" / "mcp.json").exists()
 
     def test_init_prefers_client_root_over_server_cwd(self, mcp_server_e2e, _event_loop, tmp_path, monkeypatch):
         server, _ = mcp_server_e2e
@@ -1357,12 +1441,126 @@ class TestE2ELearningTools:
         )
 
         expected = client_project_dir / ".trae" / "rules" / "hermes-mcp-workflow.md"
-        assert Path(result["absolute_path"]) == expected
+        assert Path(result["rules"]["absolute_path"]) == expected
         assert expected.exists()
         assert not (server_repo_dir / ".trae" / "rules" / "hermes-mcp-workflow.md").exists()
 
-    def test_plan_read_update(self, mcp_server_e2e, _event_loop):
+    def test_init_prefers_mcp_root_over_explicit_workspace_root(self, mcp_server_e2e, _event_loop, tmp_path):
         server, _ = mcp_server_e2e
+        client_project_dir = tmp_path / "client-project"
+        explicit_project_dir = tmp_path / "explicit-project"
+        client_project_dir.mkdir()
+        explicit_project_dir.mkdir()
+
+        result = _run_tool(
+            server,
+            "init",
+            {
+                "project_name": "Client Project",
+                "overwrite": True,
+                "workspace_root": str(explicit_project_dir),
+            },
+            context=_context_with_roots(client_project_dir),
+        )
+
+        expected = client_project_dir / ".trae" / "rules" / "hermes-mcp-workflow.md"
+        assert result["success"] is True
+        assert Path(result["rules"]["absolute_path"]) == expected
+        assert expected.exists()
+        assert not (explicit_project_dir / ".trae" / "rules" / "hermes-mcp-workflow.md").exists()
+
+    def test_init_falls_back_to_explicit_workspace_root_when_mcp_roots_fail(
+        self,
+        mcp_server_e2e,
+        _event_loop,
+        tmp_path,
+        monkeypatch,
+    ):
+        server, _ = mcp_server_e2e
+        server_repo_dir = tmp_path / "server-repo"
+        explicit_project_dir = tmp_path / "explicit-project"
+        server_repo_dir.mkdir()
+        explicit_project_dir.mkdir()
+        monkeypatch.chdir(server_repo_dir)
+
+        result = _run_tool(
+            server,
+            "init",
+            {
+                "project_name": "Explicit Project",
+                "overwrite": True,
+                "workspace_root": str(explicit_project_dir),
+            },
+            context=_context_with_failing_roots(),
+        )
+
+        expected = explicit_project_dir / ".trae" / "rules" / "hermes-mcp-workflow.md"
+        assert result["success"] is True, result
+        assert result["workspace_root"] == str(explicit_project_dir)
+        assert Path(result["rules"]["absolute_path"]) == expected
+        assert expected.exists()
+        assert not (server_repo_dir / ".trae" / "rules" / "hermes-mcp-workflow.md").exists()
+
+    def test_init_falls_back_to_explicit_workspace_root_without_context(
+        self,
+        mcp_server_e2e,
+        _event_loop,
+        tmp_path,
+        monkeypatch,
+    ):
+        server, _ = mcp_server_e2e
+        server_repo_dir = tmp_path / "server-repo"
+        explicit_project_dir = tmp_path / "explicit-project"
+        server_repo_dir.mkdir()
+        explicit_project_dir.mkdir()
+        monkeypatch.chdir(server_repo_dir)
+
+        result = _run_tool(
+            server,
+            "init",
+            {
+                "project_name": "Explicit Project",
+                "overwrite": True,
+                "workspace_root": explicit_project_dir.resolve().as_uri(),
+            },
+        )
+
+        expected = explicit_project_dir / ".trae" / "rules" / "hermes-mcp-workflow.md"
+        assert result["success"] is True
+        assert Path(result["rules"]["absolute_path"]) == expected
+        assert expected.exists()
+        assert not (server_repo_dir / ".trae" / "rules" / "hermes-mcp-workflow.md").exists()
+
+    def test_init_requires_mcp_roots(self, mcp_server_e2e, _event_loop, tmp_path, monkeypatch):
+        server, _ = mcp_server_e2e
+        server_repo_dir = tmp_path / "server-repo"
+        server_repo_dir.mkdir()
+        monkeypatch.chdir(server_repo_dir)
+
+        result = _run_tool(
+            server,
+            "init",
+            {
+                "project_name": "Target Project",
+                "overwrite": True,
+            },
+        )
+
+        assert result["success"] is False
+        assert "MCP Roots are required" in result["error"]
+        assert not (server_repo_dir / ".trae").exists()
+
+    def test_init_schema_omits_path_arguments(self, mcp_server_e2e, _event_loop):
+        server, _ = mcp_server_e2e
+
+        init_tool = server._tool_manager.get_tool("init")
+        assert init_tool is not None
+        assert set(init_tool.parameters["properties"]) == {"project_name", "overwrite", "workspace_root"}
+        assert "path" not in init_tool.parameters["properties"]
+
+    def test_plan_read_update(self, mcp_server_e2e, _event_loop, tmp_path):
+        server, _ = mcp_server_e2e
+        ctx = _context_with_roots(tmp_path)
         guide = _run_tool(server, "plan_skill_read")
         assert guide["success"] is True
         assert guide["name"] == "plan"
@@ -1382,11 +1580,17 @@ class TestE2ELearningTools:
                 "files": ["mcp_serve.py", "tools/plan_tool.py", "TRAE_MCP_SYSTEM_PROMPT_CN.md"],
                 "tests": ["scripts/run_tests.sh tests/test_mcp_serve.py"],
             },
+            context=ctx,
         )
         assert created["success"] is True
         assert created["path"].startswith(".hermes/plans/")
 
-        read_back = _run_tool(server, "plan_read", {"path": created["path"]})
+        read_back = _run_tool(
+            server,
+            "plan_read",
+            {"path": created["path"]},
+            context=ctx,
+        )
         assert read_back["success"] is True
         assert "Add FastMCP planner executor workflow" in read_back["content"]
 
@@ -1397,10 +1601,11 @@ class TestE2ELearningTools:
                 "path": created["path"],
                 "content": "# Updated plan\n\n## Step-by-step plan\n\n- Do the thing\n",
             },
+            context=ctx,
         )
         assert updated["success"] is True
 
-        latest = _run_tool(server, "plan_read", {"latest": True})
+        latest = _run_tool(server, "plan_read", {"latest": True}, context=ctx)
         assert latest["success"] is True
         assert latest["content"].startswith("# Updated plan")
 
@@ -1436,6 +1641,56 @@ class TestE2ELearningTools:
         )
         assert updated["success"] is True
         assert Path(updated["absolute_path"]) == Path(created["absolute_path"])
+
+    def test_project_artifact_tools_require_mcp_roots_when_client_roots_are_unavailable(
+        self,
+        mcp_server_e2e,
+        _event_loop,
+        tmp_path,
+        monkeypatch,
+    ):
+        server, _ = mcp_server_e2e
+        server_repo_dir = tmp_path / "server-repo"
+        server_repo_dir.mkdir()
+        monkeypatch.chdir(server_repo_dir)
+
+        calls = [
+            ("init", {"project_name": "Missing MCP Roots"}),
+            ("plan", {"task": "Missing MCP Roots"}),
+            ("plan_read", {"latest": True}),
+            ("plan_update", {"path": ".hermes/plans/missing.md", "content": "# Missing\n"}),
+        ]
+        for name, args in calls:
+            result = _run_tool(server, name, args)
+            assert result["success"] is False, name
+            assert "MCP Roots are required" in result["error"], name
+
+        assert not (server_repo_dir / ".hermes" / "plans").exists()
+        assert not (server_repo_dir / ".trae" / "rules").exists()
+
+    def test_project_artifact_tools_reject_ambiguous_mcp_roots(
+        self,
+        mcp_server_e2e,
+        _event_loop,
+        tmp_path,
+    ):
+        server, _ = mcp_server_e2e
+        first_project_dir = tmp_path / "first-project"
+        second_project_dir = tmp_path / "second-project"
+        first_project_dir.mkdir()
+        second_project_dir.mkdir()
+
+        result = _run_tool(
+            server,
+            "plan",
+            {"task": "Ambiguous roots"},
+            context=_context_with_roots(first_project_dir, second_project_dir),
+        )
+
+        assert result["success"] is False
+        assert "Exactly one MCP Root is required" in result["error"]
+        assert not (first_project_dir / ".hermes" / "plans").exists()
+        assert not (second_project_dir / ".hermes" / "plans").exists()
 
 
 # ---------------------------------------------------------------------------

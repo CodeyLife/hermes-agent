@@ -1,4 +1,4 @@
-\#必须遵守的规则
+必须遵守的规则
 
 1. 复杂任务开始前，必须先调用 `task_context_bundle(...)`。
 2. 如上下文不足，再按需调用 `skill_view_safe(...)` 或 `session_recall_search(...)`。

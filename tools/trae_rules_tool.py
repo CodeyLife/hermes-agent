@@ -13,7 +13,7 @@ from typing import Any, Dict, Optional
 def _workspace_root(workspace_root: Optional[str | Path] = None) -> Path:
     if workspace_root is None:
         return Path.cwd()
-    return Path(workspace_root)
+    return Path(workspace_root).expanduser()
 
 
 def _default_rules_path() -> Path:
@@ -41,13 +41,15 @@ def _atomic_write(path: Path, content: str) -> None:
 def build_trae_project_rules(*, project_name: Optional[str] = None) -> str:
     project_label = (project_name or "").strip() or "当前项目"
     content = f"""必须遵守的规则
-    
+
 1. 复杂任务开始前，必须先调用 `task_context_bundle(...)`。
 2. 如上下文不足，再按需调用 `skill_view_safe(...)` 或 `session_recall_search(...)`。
 3. 规划任务前先调用 `plan_skill_read()`。
-4. 形成方案后，必须调用 `plan(...)` 落盘；需要修改时再用 `plan_read(...)` / `plan_update(...)`。
-5. 默认不写入记忆或技能；仅当内容是稳定事实、长期约定、明确用户偏好，且大概率跨任务复用时，调用 `memory_write(...)`。
-6. 仅当本次形成了“已验证”的可复用流程、重复修复模式，或确认需要改进现有技能时，才调用 `skill_create_or_patch(...)`。
+4. 在最终回复前，必须依次确认：
+- [ ] 本次任务是否已完成
+- [ ] 是否存在可复用稳定事实可写入 `memory_write(...)`
+- [ ] 是否存在已验证流程/模式可写入 `skill_create_or_patch(...)`
+- [ ] 若都没有，内部记为“已检查，暂无可沉淀经验”
 """
     if len(content) > 1000:
         raise ValueError(f"Generated rules exceed 1000 characters: {len(content)}")
@@ -94,4 +96,35 @@ def init_trae_project_rules(
         "absolute_path": str(target),
         "content": content if content.endswith("\n") else content + "\n",
         "message": "Trae project rules initialized.",
+    }
+
+
+def init_trae_project_config(
+    *,
+    project_name: Optional[str] = None,
+    overwrite: bool = False,
+    workspace_root: Optional[str | Path] = None,
+) -> Dict[str, Any]:
+    """Initialize Trae project rules.
+
+    Kept as a compatibility wrapper for existing imports; it intentionally no
+    longer writes a project-local `.trae/mcp.json`. MCP clients should advertise
+    workspace Roots, and init should only place Hermes workflow rules in the
+    caller project.
+    """
+    root = _workspace_root(workspace_root)
+    rules_result = init_trae_project_rules(
+        project_name=project_name,
+        overwrite=overwrite,
+        workspace_root=root,
+    )
+
+    return {
+        "success": bool(rules_result.get("success", True)),
+        "workspace_root": str(root),
+        "rules": rules_result,
+        "message": (
+            "Trae project rules initialized. The MCP client must advertise this "
+            "folder through MCP Roots; no project-local mcp.json was generated."
+        ),
     }

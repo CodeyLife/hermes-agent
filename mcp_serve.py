@@ -205,7 +205,11 @@ def _bounded_excerpt(value: Any, limit: int) -> str:
 
 
 def _file_url_to_path(uri: str) -> Optional[Path]:
-    parsed = urlparse(str(uri or ""))
+    raw_uri = str(uri or "")
+    if os.name == "nt" and re.match(r"^[a-zA-Z]:[\\/]", raw_uri):
+        return Path(raw_uri)
+
+    parsed = urlparse(raw_uri)
     if parsed.scheme and parsed.scheme != "file":
         return None
     if parsed.scheme != "file":
@@ -222,31 +226,75 @@ def _file_url_to_path(uri: str) -> Optional[Path]:
     return Path(path)
 
 
-async def _resolve_workspace_root(ctx: Optional["Context"] = None) -> Path:
-    """Prefer MCP client roots; fall back to the server process cwd."""
+def _explicit_workspace_root_to_path(workspace_root: str) -> Path:
+    """Normalize and validate a caller-provided workspace root path."""
+    value = str(workspace_root or "").strip()
+    if not value:
+        raise ValueError("workspace_root is required when MCP Roots are unavailable.")
+
+    candidate = _file_url_to_path(value)
+    if candidate is None:
+        raise ValueError("workspace_root must be a local filesystem path or file:// URI.")
+
+    candidate = candidate.expanduser()
+    if candidate.exists() and candidate.is_file():
+        candidate = candidate.parent
+    if not candidate.exists() or not candidate.is_dir():
+        raise ValueError(f"workspace_root must be an existing directory: {workspace_root}")
+    return candidate
+
+
+async def _resolve_workspace_root(
+    ctx: Optional["Context"] = None,
+    *,
+    require_client_root: bool = False,
+) -> Path:
+    """Resolve the caller project root for workspace-scoped artifacts.
+
+    Resolution order:
+    1. MCP client-advertised roots.
+    2. Server process cwd, unless ``require_client_root`` is true.
+    """
     fallback = Path.cwd()
     if ctx is None:
+        if require_client_root:
+            raise ValueError("MCP Roots are required when the client does not provide workspace roots.")
         return fallback
 
     session = getattr(ctx, "session", None)
     list_roots = getattr(session, "list_roots", None)
     if list_roots is None:
+        if require_client_root:
+            raise ValueError("MCP Roots are required when the client session does not expose workspace roots.")
         return fallback
 
     try:
         roots_result = await list_roots()
     except Exception as exc:
+        if require_client_root:
+            raise ValueError("MCP Roots are required when workspace roots cannot be resolved from the client.") from exc
         logger.debug("Failed to list client roots, falling back to cwd: %s", exc)
         return fallback
 
+    candidates: list[Path] = []
     for root in getattr(roots_result, "roots", []) or []:
         candidate = _file_url_to_path(str(getattr(root, "uri", "") or ""))
         if not candidate:
             continue
         if candidate.exists() and candidate.is_file():
-            return candidate.parent
-        return candidate
+            candidate = candidate.parent
+        candidates.append(candidate)
 
+    if candidates:
+        if require_client_root and len(candidates) > 1:
+            raise ValueError(
+                "Exactly one MCP Root is required for project artifact writes; "
+                f"the client advertised {len(candidates)} roots."
+            )
+        return candidates[0]
+
+    if require_client_root:
+        raise ValueError("MCP Roots are required when the client does not advertise any workspace roots.")
     return fallback
 
 
@@ -1206,11 +1254,12 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
     # -- task_context_bundle ----------------------------------------------
 
     @mcp.tool()
-    def task_context_bundle(
+    async def task_context_bundle(
         query: str,
         memory_limit: int = 5,
         session_limit: int = 5,
         skill_limit: int = 5,
+        ctx: Optional["Context"] = None,
     ) -> str:
         """返回适用于 Trae 的有界任务前上下文包。
 
@@ -1234,6 +1283,10 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
             from tools.memory_tool import read_live_memory_state
             from tools.skills_tool import local_skills_list
 
+            workspace_root = await _resolve_workspace_root(
+                ctx,
+                require_client_root=False,
+            )
             memory_state = read_live_memory_state()
             quality_audit = audit_due_knowledge()
             session_result = _deterministic_session_recall_search(
@@ -1243,17 +1296,29 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
             )
             skills_result = local_skills_list(query=query, limit=skill_limit)
 
-            if not session_result.get("success"):
-                return json.dumps(session_result, indent=2, ensure_ascii=False)
             if not skills_result.get("success"):
                 return json.dumps(skills_result, indent=2, ensure_ascii=False)
+
+            session_hits = []
+            session_recall_status = {
+                "success": bool(session_result.get("success")),
+                "available": bool(session_result.get("success")),
+                "count": 0,
+            }
+            if session_result.get("success"):
+                session_hits = session_result.get("results", [])[:session_limit]
+                session_recall_status["count"] = len(session_hits)
+            else:
+                session_recall_status["error"] = session_result.get(
+                    "error",
+                    "Session recall unavailable",
+                )
 
             skill_candidates = skills_result.get("skills", [])[:skill_limit]
             hints = [
                 "可使用 skill_view_safe(name=...) 查看候选技能的完整内容。",
                 "可使用 session_recall_search(query=...) 做更聚焦的后续会话回忆检索。",
-                "如需按 Hermes 原生 /plan 风格规划，可先调用 plan_skill_read()。",
-                "确定方案后调用 plan(...)；任务完成后考虑调用 memory_write(...) 或 skill_create_or_patch(...)。",
+                "任务完成沉淀经验可 考虑调用 memory_write(...) 或 skill_create_or_patch(...)。",
             ]
 
             memory_entries, memory_quality = filter_memory_entries(
@@ -1274,9 +1339,11 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
             bundle = {
                 "success": True,
                 "query": query,
+                "resolved_project_root": str(workspace_root),
                 "memory": memory_entries[-memory_limit:],
                 "user": user_entries[-memory_limit:],
-                "session_hits": session_result.get("results", [])[:session_limit],
+                "session_hits": session_hits,
+                "session_recall_status": session_recall_status,
                 "skill_candidates": skill_candidates,
                 "hints": hints,
                 "quality_audit": quality_audit,
@@ -1295,31 +1362,38 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
     @mcp.tool()
     async def init(
         project_name: Optional[str] = None,
-        path: Optional[str] = None,
         overwrite: bool = False,
+        workspace_root: Optional[str] = None,
         ctx: Optional["Context"] = None,
     ) -> str:
-        """初始化 Trae 项目规则文件，强制其遵守 Hermes MCP 工作流。
+        """初始化 Trae 项目规则，强制其遵守 Hermes MCP 工作流。
 
-        默认写入 `.trae/rules/hermes-mcp-workflow.md`。规则会要求 Trae：
+        目标项目目录优先来自 MCP Roots；当客户端无法提供 Roots 时，才回退到
+        显式传入的 `workspace_root`。不会生成 `.trae/mcp.json`。
+        默认只写入 `.trae/rules/hermes-mcp-workflow.md`。规则会要求 Trae：
         - 复杂任务先做 Hermes 检索
         - 必要时读取 plan skill
         - 计划完成后写入 plan
         - 任务完成后检查 memory_write / skill_create_or_patch
         """
         try:
-            from tools.trae_rules_tool import init_trae_project_rules
+            from tools.trae_rules_tool import init_trae_project_config
 
-            workspace_root = await _resolve_workspace_root(ctx)
-            result = init_trae_project_rules(
+            try:
+                resolved_workspace_root = await _resolve_workspace_root(ctx, require_client_root=True)
+            except Exception:
+                if workspace_root is None:
+                    raise
+                resolved_workspace_root = _explicit_workspace_root_to_path(workspace_root)
+
+            result = init_trae_project_config(
                 project_name=project_name,
-                path=path,
                 overwrite=overwrite,
-                workspace_root=workspace_root,
+                workspace_root=resolved_workspace_root,
             )
             return json.dumps(result, indent=2, ensure_ascii=False)
         except Exception as e:
-            return _structured_error(f"Failed to initialize Trae project rules: {e}")
+            return _structured_error(f"Failed to initialize Trae project config: {e}")
 
     # -- plan -------------------------------------------------------
 
@@ -1347,7 +1421,7 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
         content: Optional[str] = None,
         ctx: Optional["Context"] = None,
     ) -> str:
-        """在当前工作区的 .hermes/plans 下创建 markdown plan。
+        """在调用方项目根目录的 .hermes/plans 下创建 markdown plan。
 
         该工具是确定性的计划产物存储层，不会调用 Hermes 自身的 LLM 或 /plan 技能。
         建议由 Trae 先自行规划，再将最终计划写入该工具。
@@ -1355,7 +1429,10 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
         try:
             from tools.plan_tool import create_plan
 
-            workspace_root = await _resolve_workspace_root(ctx)
+            workspace_root = await _resolve_workspace_root(
+                ctx,
+                require_client_root=True,
+            )
             result = create_plan(
                 task=task,
                 goal=goal,
@@ -1380,11 +1457,14 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
         latest: bool = False,
         ctx: Optional["Context"] = None,
     ) -> str:
-        """读取当前工作区 .hermes/plans 下的某个计划文件。"""
+        """读取调用方项目根目录 .hermes/plans 下的某个计划文件。"""
         try:
             from tools.plan_tool import read_plan
 
-            workspace_root = await _resolve_workspace_root(ctx)
+            workspace_root = await _resolve_workspace_root(
+                ctx,
+                require_client_root=True,
+            )
             result = read_plan(path=path, latest=latest, workspace_root=workspace_root)
             return json.dumps(result, indent=2, ensure_ascii=False)
         except Exception as e:
@@ -1402,7 +1482,10 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
         try:
             from tools.plan_tool import update_plan
 
-            workspace_root = await _resolve_workspace_root(ctx)
+            workspace_root = await _resolve_workspace_root(
+                ctx,
+                require_client_root=True,
+            )
             result = update_plan(path=path, content=content, workspace_root=workspace_root)
             return json.dumps(result, indent=2, ensure_ascii=False)
         except Exception as e:

@@ -5,7 +5,7 @@ Deterministic plan artifacts for MCP clients.
 These helpers intentionally do not invoke Hermes's agent runtime or bundled
 ``/plan`` skill. They provide a thin, stateless file-backed contract that lets
 external MCP clients such as Trae create, read, and update markdown plans in
-the active workspace.
+the caller project workspace.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ _HEADING_RE = re.compile(r"^#+\s+")
 def _workspace_root(workspace_root: Optional[str | Path] = None) -> Path:
     if workspace_root is None:
         return Path.cwd()
-    return Path(workspace_root)
+    return Path(workspace_root).expanduser()
 
 
 def _repo_root() -> Path:
@@ -121,7 +121,7 @@ def create_plan(
     content: Optional[str] = None,
     workspace_root: Optional[str | Path] = None,
 ) -> Dict[str, Any]:
-    """Create a markdown plan in ``.hermes/plans`` under the current workspace."""
+    """Create a markdown plan in ``.hermes/plans`` under the caller workspace."""
     body = str(content or "").strip()
     if body:
         markdown = body + ("\n" if not body.endswith("\n") else "")

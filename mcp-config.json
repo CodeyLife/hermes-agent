@@ -1,0 +1,51 @@
+{
+  "_comment": "Hermes MCP 服务配置方案 - 选择其中一种配置到你的 Trae settings.json 中",
+  
+  "方案1_推荐_使用hermes命令": {
+    "说明": "最简洁，无需路径配置，但需要确保 hermes 命令在系统 PATH 中",
+    "mcpServers": {
+      "hermes": {
+        "command": "hermes",
+        "args": ["mcp", "serve"]
+      }
+    }
+  },
+  
+  "方案2_使用启动脚本": {
+    "说明": "使用 mcp-serve.bat 脚本，自动处理虚拟环境",
+    "mcpServers": {
+      "hermes": {
+        "command": "cmd.exe",
+        "args": ["/c", "d:\\GithubProject\\hermes-agent\\mcp-serve.bat"]
+      }
+    }
+  },
+  
+  "方案3_当前配置_完整路径": {
+    "说明": "原始配置方式，明确指定 Python 和项目路径",
+    "mcpServers": {
+      "hermes": {
+        "command": "python",
+        "args": [
+          "-c",
+          "import sys; sys.path.insert(0, r'd:\\GithubProject\\hermes-agent'); from mcp_serve import run_mcp_server; run_mcp_server()"
+        ],
+        "cwd": "d:\\GithubProject\\hermes-agent"
+      }
+    }
+  },
+  
+  "方案4_使用虚拟环境Python": {
+    "说明": "直接使用虚拟环境的 Python，避免路径操作",
+    "mcpServers": {
+      "hermes": {
+        "command": "d:\\GithubProject\\hermes-agent\\venv\\Scripts\\python.exe",
+        "args": [
+          "-c",
+          "from mcp_serve import run_mcp_server; run_mcp_server()"
+        ],
+        "cwd": "d:\\GithubProject\\hermes-agent"
+      }
+    }
+  }
+}
