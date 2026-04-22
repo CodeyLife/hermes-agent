@@ -323,7 +323,7 @@
     "omx-1776819863803-uanewp": {
       "session_id": "omx-1776819863803-uanewp",
       "leader_thread_id": "019db2b7-85f6-7411-8d3c-fcd82fdd62ae",
-      "updated_at": "2026-04-22T02:55:16.244Z",
+      "updated_at": "2026-04-22T03:37:03.345Z",
       "threads": {
         "019db2b7-85f6-7411-8d3c-fcd82fdd62ae": {
           "thread_id": "019db2b7-85f6-7411-8d3c-fcd82fdd62ae",
@@ -337,9 +337,9 @@
           "thread_id": "019db2fc-c82e-79d2-b282-834be5f0017b",
           "kind": "subagent",
           "first_seen_at": "2026-04-22T02:24:01.299Z",
-          "last_seen_at": "2026-04-22T02:55:16.244Z",
-          "last_turn_id": "019db31b-be77-7281-9f4f-3ebba1e835c9",
-          "turn_count": 10
+          "last_seen_at": "2026-04-22T03:37:03.345Z",
+          "last_turn_id": "019db342-8f0c-7520-bb8d-fb45a9800edc",
+          "turn_count": 15
         }
       }
     }

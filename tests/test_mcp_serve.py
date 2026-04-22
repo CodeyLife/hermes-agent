@@ -650,13 +650,11 @@ class TestToolRegistration:
         tool_names = {t.name for t in tools}
 
         expected = {
-            "planning_session_create", "planning_context_attach",
-            "planning_plan_save", "planning_review_save", "planning_handoff_prepare",
             "memory_read", "memory_write", "session_recall_search",
             "skills_list", "skill_view_safe", "skill_create_or_patch",
             "task_context_bundle", "init",
             "bundled_skill_read", "plan_skill_read", "plan",
-            "autopilot", "deep_interview", "ralph", "ralplan",
+            "autopilot", "deep_interview", "ralph", "ralplan", "ralplan_legacy",
             "permissions_list_open", "permissions_respond",
         }
         assert expected == tool_names, f"Missing: {expected - tool_names}, Extra: {tool_names - expected}"
@@ -684,10 +682,6 @@ class TestToolRegistration:
         server, _ = mcp_server_e2e
         templates = {t.uri_template for t in server._resource_manager.list_templates()}
         assert "hermes://skills/{name}" in templates
-        assert "hermes://plans/{plan_id}" in templates
-        assert "hermes://plans/{plan_id}/metadata" in templates
-        assert "hermes://plans/{plan_id}/reviews/{iteration}/{role}" in templates
-        assert "hermes://plans/{plan_id}/contexts/{snapshot_id}" in templates
 
 
 class TestE2ELearningTools:
@@ -1403,6 +1397,28 @@ class TestE2ELearningTools:
             {"instruction": "Plan the MCP wrapper rollout", "interactive": True, "deliberate": True},
         )
         assert result["success"] is True
+        assert result["tool_mode"] == "host_managed_ralplan"
+        assert result["next_action"]["name"] == "ralplan"
+        assert result["next_action"]["type"] == "use_invocation_message"
+        assert result["next_action"]["arguments"]["instruction"] == "Plan the MCP wrapper rollout"
+        assert result["next_action"]["arguments"]["interactive"] is True
+        assert result["next_action"]["arguments"]["deliberate"] is True
+        assert "invocation_message" in result
+        assert "Do NOT call `plan_skill_read` as the next step" in result["invocation_message"]
+        assert "Hermes MCP does NOT maintain planning session state" in result["invocation_message"]
+        assert "call the Hermes MCP `ralph` tool itself" in result["invocation_message"]
+        assert result["legacy_tool"] == "ralplan_legacy"
+        assert result["host_state_required"] is True
+        assert "Submit invocation_message" in result["client_action"]
+    
+    def test_ralplan_legacy_wrapper(self, mcp_server_e2e, _event_loop):
+        server, _ = mcp_server_e2e
+        result = _run_tool(
+            server,
+            "ralplan_legacy",
+            {"instruction": "Plan the MCP wrapper rollout", "interactive": True, "deliberate": True},
+        )
+        assert result["success"] is True
         assert result["skill"] == "ralplan"
         assert "--interactive --deliberate Plan the MCP wrapper rollout" in result["invocation_message"]
         assert "bundled_skill_read(name=\"planner\")" in result["invocation_message"]
@@ -1424,8 +1440,8 @@ class TestE2ELearningTools:
         assert "The host agent continues with a clear, bounded plan in the same MCP-hosted" in result["invocation_message"]
         assert "`team`" not in result["invocation_message"].split("--- BEGIN my_skills/plan/SKILL.md ---", 1)[0]
         assert "`ultrawork`" not in result["invocation_message"].split("--- BEGIN my_skills/plan/SKILL.md ---", 1)[0]
-        assert result["recommended_path"] == "prompt_resource_tool"
-        assert result["prompt_name"] == "ralplan"
+        assert result["deprecated"] is True
+        assert result["replacement_tool"] == "ralplan"
         assert "included_assets" not in result
         assert [item["name"] for item in result["required_bundled_skills"]] == [
             "plan",
@@ -1446,76 +1462,6 @@ class TestE2ELearningTools:
         assert "Assume the MCP host does **not** have `AskUserQuestion`, `ask_codex`" in rendered
         assert "bundled_skill_read(name=\"planner\")" in rendered
 
-    def test_planning_session_save_and_resources(self, mcp_server_e2e, _event_loop):
-        server, _ = mcp_server_e2e
-        created = _run_tool(
-            server,
-            "planning_session_create",
-            {
-                "instruction": "Plan MCP wrapper rollout",
-                "mode": "ralplan",
-                "interactive": False,
-                "deliberate": True,
-            },
-        )
-        assert created["success"] is True
-        plan_id = created["plan_id"]
-        assert created["status"] == "draft"
-        assert created["storage_path_display"].endswith(f"/plan/sessions/{plan_id}/")
-        assert created["next_action"]["name"] == "ralplan"
-
-        saved = _run_tool(
-            server,
-            "planning_plan_save",
-            {
-                "plan_id": plan_id,
-                "markdown": "# Plan: MCP wrapper rollout\n\n## Acceptance Criteria\n- [ ] done\n",
-                "status": "review",
-                "iteration": 1,
-            },
-        )
-        assert saved["success"] is True
-        assert saved["status"] == "review"
-        assert saved["iteration"] == 1
-
-        metadata = json.loads(_read_resource(server, created["metadata_resource_uri"]))
-        assert metadata["plan_id"] == plan_id
-        assert metadata["status"] == "review"
-
-        plan_md = _read_resource(server, created["plan_resource_uri"])
-        assert "# Plan: MCP wrapper rollout" in plan_md
-
-        attached = _run_tool(
-            server,
-            "planning_context_attach",
-            {"plan_id": plan_id, "context_markdown": "# Context\n- fact", "snapshot_id": "initial-context"},
-        )
-        assert attached["success"] is True
-        ctx = _read_resource(server, attached["context_resource_uri"])
-        assert "# Context" in ctx
-
-        review = _run_tool(
-            server,
-            "planning_review_save",
-            {
-                "plan_id": plan_id,
-                "role": "critic",
-                "iteration": 1,
-                "markdown": "Verdict: APPROVE",
-                "verdict": "APPROVE",
-            },
-        )
-        assert review["success"] is True
-        assert review["latest_verdict"] == "APPROVE"
-        assert review["status"] == "approved"
-        review_md = _read_resource(server, review["review_resource_uri"])
-        assert "Verdict: APPROVE" in review_md
-
-        handoff = _run_tool(server, "planning_handoff_prepare", {"plan_id": plan_id, "target": "ralph"})
-        assert handoff["success"] is True
-        assert handoff["prompt_name"] == "ralph"
-        assert handoff["plan_resource_uri"] == created["plan_resource_uri"]
-        assert "Execute the approved plan" in handoff["handoff_summary"]
 
     def test_init_requires_mcp_roots_when_client_roots_are_unavailable(
         self,

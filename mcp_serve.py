@@ -18,7 +18,7 @@ Hermes MCP Server：暴露本地学习资产与 workflow 提示包。
   skills_list, skill_view_safe, skill_create_or_patch
   task_context_bundle, init
   bundled_skill_read, plan_skill_read, plan
-  autopilot, deep_interview, ralph, ralplan
+  autopilot, deep_interview, ralph, ralplan, ralplan_legacy
   permissions_list_open, permissions_respond
 
 用法：
@@ -669,17 +669,28 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
 
     bridge = event_bridge or EventBridge()
 
-    def _plan_uri(plan_id: str) -> str:
-        return f"hermes://plans/{plan_id}"
-
-    def _plan_metadata_uri(plan_id: str) -> str:
-        return f"hermes://plans/{plan_id}/metadata"
-
-    def _plan_review_uri(plan_id: str, iteration: int, role: str) -> str:
-        return f"hermes://plans/{plan_id}/reviews/{int(iteration)}/{role}"
-
-    def _plan_context_uri(plan_id: str, snapshot_id: str) -> str:
-        return f"hermes://plans/{plan_id}/contexts/{snapshot_id}"
+    def _structured_ralplan_runtime_note() -> str:
+        return (
+            "[Hermes MCP structured ralplan runtime]\n"
+            "- Do NOT call `plan_skill_read` as the next step; the ralplan skill "
+            "content is already in this invocation_message.\n"
+            "- Hermes MCP does NOT maintain planning session state, plan files, "
+            "review files, iteration counters, or handoff state for this flow.\n"
+            "- The MCP host must maintain the planning artifact lifecycle itself: "
+            "task slug, plan markdown, architect review, critic review, current "
+            "iteration, verdict, and any resource or file URIs.\n"
+            "- Produce the initial Markdown plan now and store it using host-owned "
+            "state or files.\n"
+            "- For review steps, use `architect` / `critic` prompts or apply those "
+            "perspectives locally when the host cannot call MCP prompts/get. The "
+            "host must store each review result itself.\n"
+            "- If Critic returns REVISE or REJECT, the host should re-run the "
+            "Planner pass with the latest Architect/Critic feedback and repeat the "
+            "review loop.\n"
+            "- If Critic returns APPROVE and execution is desired, the host should "
+            "call the Hermes MCP `ralph` tool itself using the approved plan summary "
+            "that the host has maintained.\n"
+        )
 
     def _skill_instruction(skill_name: str, *, instruction: str = "") -> str:
         normalized = skill_name.strip().lower().replace("_", "-")
@@ -783,217 +794,7 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
             raise FileNotFoundError(result.get("error") or f"Unknown bundled skill: {name}")
         return str(result.get("content") or "")
 
-    @mcp.resource(
-        "hermes://plans/{plan_id}",
-        name="hermes-plan",
-        description="Stored MCP planning markdown artifact.",
-        mime_type="text/markdown",
-    )
-    def plan_resource(plan_id: str) -> str:
-        from tools.mcp_planning_store import read_plan_markdown
-
-        return read_plan_markdown(plan_id)
-
-    @mcp.resource(
-        "hermes://plans/{plan_id}/metadata",
-        name="hermes-plan-metadata",
-        description="Stored MCP planning metadata JSON.",
-        mime_type="application/json",
-    )
-    def plan_metadata_resource(plan_id: str) -> str:
-        from tools.mcp_planning_store import read_metadata
-
-        return json.dumps(read_metadata(plan_id), indent=2, ensure_ascii=False)
-
-    @mcp.resource(
-        "hermes://plans/{plan_id}/reviews/{iteration}/{role}",
-        name="hermes-plan-review",
-        description="Stored architect/critic review markdown.",
-        mime_type="text/markdown",
-    )
-    def plan_review_resource(plan_id: str, iteration: str, role: str) -> str:
-        from tools.mcp_planning_store import read_review
-
-        return read_review(plan_id, int(iteration), role)
-
-    @mcp.resource(
-        "hermes://plans/{plan_id}/contexts/{snapshot_id}",
-        name="hermes-plan-context",
-        description="Stored planning context snapshot markdown.",
-        mime_type="text/markdown",
-    )
-    def plan_context_resource(plan_id: str, snapshot_id: str) -> str:
-        from tools.mcp_planning_store import read_context_snapshot
-
-        return read_context_snapshot(plan_id, snapshot_id)
-
     # -- memory_read -------------------------------------------------------
-
-    @mcp.tool()
-    def planning_session_create(
-        instruction: str,
-        mode: str = "ralplan",
-        interactive: bool = False,
-        deliberate: bool = False,
-    ) -> str:
-        """Create a persisted planning session under the profile-scoped .hermes/plan tree."""
-        try:
-            from tools.mcp_planning_store import ensure_plan_session, plan_storage_path_display
-
-            metadata = ensure_plan_session(
-                instruction,
-                mode=mode,
-                interactive=interactive,
-                deliberate=deliberate,
-            )
-            plan_id = metadata["plan_id"]
-            prompt_name = "ralplan" if str(mode).strip().lower() == "ralplan" else "plan"
-            result = {
-                "success": True,
-                "plan_id": plan_id,
-                "status": metadata.get("status", "draft"),
-                "plan_resource_uri": _plan_uri(plan_id),
-                "metadata_resource_uri": _plan_metadata_uri(plan_id),
-                "storage_path_display": plan_storage_path_display(plan_id),
-                "next_action": {
-                    "type": "get_prompt",
-                    "name": prompt_name,
-                    "arguments": {
-                        "instruction": instruction,
-                        "interactive": bool(interactive),
-                        "deliberate": bool(deliberate),
-                    },
-                },
-            }
-            if prompt_name == "plan":
-                result["next_action"]["arguments"]["mode"] = mode
-            return json.dumps(result, indent=2, ensure_ascii=False)
-        except Exception as e:
-            return _structured_error(f"Failed to create planning session: {e}")
-
-    @mcp.tool()
-    def planning_context_attach(
-        plan_id: str,
-        context_markdown: str,
-        snapshot_id: Optional[str] = None,
-        source: Optional[str] = None,
-    ) -> str:
-        """Attach a markdown context snapshot to a planning session."""
-        try:
-            from tools.mcp_planning_store import save_context_snapshot
-
-            resolved_snapshot = save_context_snapshot(
-                plan_id,
-                content=context_markdown,
-                snapshot_id=snapshot_id,
-            )
-            payload = {
-                "success": True,
-                "plan_id": plan_id,
-                "snapshot_id": resolved_snapshot,
-                "context_resource_uri": _plan_context_uri(plan_id, resolved_snapshot),
-            }
-            if source:
-                payload["source"] = source
-            return json.dumps(payload, indent=2, ensure_ascii=False)
-        except Exception as e:
-            return _structured_error(f"Failed to attach planning context: {e}")
-
-    @mcp.tool()
-    def planning_plan_save(
-        plan_id: str,
-        markdown: str,
-        status: str = "draft",
-        iteration: Optional[int] = None,
-    ) -> str:
-        """Persist plan markdown for a planning session."""
-        try:
-            from tools.mcp_planning_store import save_plan_markdown
-
-            metadata = save_plan_markdown(
-                plan_id,
-                markdown,
-                status=status,
-                iteration=iteration,
-            )
-            return json.dumps({
-                "success": True,
-                "plan_id": plan_id,
-                "status": metadata.get("status"),
-                "iteration": metadata.get("iteration"),
-                "plan_resource_uri": _plan_uri(plan_id),
-                "metadata_resource_uri": _plan_metadata_uri(plan_id),
-            }, indent=2, ensure_ascii=False)
-        except Exception as e:
-            return _structured_error(f"Failed to save plan markdown: {e}")
-
-    @mcp.tool()
-    def planning_review_save(
-        plan_id: str,
-        role: str,
-        iteration: int,
-        markdown: str,
-        verdict: Optional[str] = None,
-    ) -> str:
-        """Persist architect/critic review output for a planning session."""
-        try:
-            from tools.mcp_planning_store import save_review
-
-            metadata = save_review(
-                plan_id,
-                role=role,
-                iteration=iteration,
-                markdown=markdown,
-                verdict=verdict,
-            )
-            return json.dumps({
-                "success": True,
-                "plan_id": plan_id,
-                "status": metadata.get("status"),
-                "iteration": metadata.get("iteration"),
-                "latest_verdict": metadata.get("latest_verdict"),
-                "review_resource_uri": _plan_review_uri(plan_id, iteration, role),
-                "metadata_resource_uri": _plan_metadata_uri(plan_id),
-            }, indent=2, ensure_ascii=False)
-        except Exception as e:
-            return _structured_error(f"Failed to save planning review: {e}")
-
-    @mcp.tool()
-    def planning_handoff_prepare(
-        plan_id: str,
-        target: str = "ralph",
-    ) -> str:
-        """Prepare a structured handoff for an approved planning artifact."""
-        try:
-            from tools.mcp_planning_store import read_metadata
-
-            normalized_target = str(target or "").strip().lower()
-            if normalized_target != "ralph":
-                return _structured_error("Only target='ralph' is currently supported")
-
-            metadata = read_metadata(plan_id)
-            plan_uri = _plan_uri(plan_id)
-            summary = (
-                f"Execute the approved plan at `{plan_uri}`. Preserve the validated "
-                f"constraints and provide verification evidence before completion."
-            )
-            from tools.mcp_skill_wrappers import ralph_invocation
-
-            handoff = ralph_invocation(summary)
-            return json.dumps({
-                "success": True,
-                "plan_id": plan_id,
-                "target": normalized_target,
-                "status": metadata.get("status"),
-                "plan_resource_uri": plan_uri,
-                "metadata_resource_uri": _plan_metadata_uri(plan_id),
-                "handoff_summary": summary,
-                "prompt_name": "ralph",
-                "prompt_args": {"instruction": summary},
-                "invocation_message": handoff.get("invocation_message"),
-            }, indent=2, ensure_ascii=False)
-        except Exception as e:
-            return _structured_error(f"Failed to prepare planning handoff: {e}")
 
     @mcp.tool()
     def memory_read() -> str:
@@ -1526,23 +1327,17 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
         except Exception as e:
             return _structured_error(f"Failed to build ralph skill invocation: {e}")
 
-    @mcp.tool()
-    def ralplan(
+    @mcp.tool(name="ralplan_legacy")
+    def ralplan_legacy(
         instruction: str,
         interactive: bool = False,
         deliberate: bool = False,
     ) -> str:
-        """生成自包含的 Ralplan 共识规划工作流调用提示包。
+        """[Deprecated] 旧版 Ralplan prompt-package 入口。
 
-        适合在编码前先做高质量方案设计，让宿主客户端进入 Hermes 的
-        `ralplan` 流程，也就是 `$plan --consensus` 的专用包装。该工具会
-        同时打包 Codex plan skill 与 Planner / Architect / Critic 角色定义，
-        让 MCP 宿主不依赖本地 `.codex` 文件也能执行对应提示工作流。可选：
-        - `interactive=true`：在关键节点停下来等待用户反馈
-        - `deliberate=true`：启用高风险任务的深度审议模式
-
-        返回值不会直接产出最终实现，也不会在 MCP 服务端内部运行多代理；
-        它只返回宿主 agent 下一轮应使用的 `invocation_message`。
+        该工具保留给尚未迁移到新版结构化 planning flow 的宿主使用。
+        新宿主应优先调用 `ralplan`，由其返回结构化 session / prompt /
+        resource 信息，再按 next_action 推进工作流。
 
         Args:
             instruction: 需要进行共识规划的任务描述
@@ -1557,16 +1352,58 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
                 interactive=interactive,
                 deliberate=deliberate,
             )
-            result["recommended_path"] = "prompt_resource_tool"
-            result["prompt_name"] = "ralplan"
-            result["prompt_args"] = {
-                "instruction": instruction,
-                "interactive": interactive,
-                "deliberate": deliberate,
+            result["deprecated"] = True
+            result["replacement_tool"] = "ralplan"
+            return json.dumps(result, indent=2, ensure_ascii=False)
+        except Exception as e:
+            return _structured_error(f"Failed to build legacy ralplan skill invocation: {e}")
+
+    @mcp.tool()
+    def ralplan(
+        instruction: str,
+        interactive: bool = False,
+        deliberate: bool = False,
+    ) -> str:
+        """创建新版结构化 Ralplan planning session。
+
+        这是推荐入口：宿主只需调用本工具，然后按返回的 `next_action`
+        获取 `ralplan` prompt 并推进 Planner / Architect / Critic 的
+        结构化 planning flow。该工具不会在服务端内部执行模型调用。
+        """
+        try:
+            from tools.mcp_skill_wrappers import ralplan_invocation
+
+            bootstrap = ralplan_invocation(
+                instruction,
+                interactive=interactive,
+                deliberate=deliberate,
+                runtime_note=_structured_ralplan_runtime_note(),
+            )
+            result = {
+                "success": True,
+                "tool_mode": "host_managed_ralplan",
+                "next_action": {
+                    "type": "use_invocation_message",
+                    "name": "ralplan",
+                    "arguments": {
+                        "instruction": instruction,
+                        "interactive": bool(interactive),
+                        "deliberate": bool(deliberate),
+                    },
+                },
+                "invocation_message": bootstrap.get("invocation_message"),
+                "required_bundled_skills": bootstrap.get("required_bundled_skills"),
+                "client_action": (
+                    "Submit invocation_message to the MCP host agent immediately. "
+                    "The MCP host must maintain the planning state, plan markdown, "
+                    "review outputs, and iteration flow itself."
+                ),
+                "host_state_required": True,
+                "legacy_tool": "ralplan_legacy",
             }
             return json.dumps(result, indent=2, ensure_ascii=False)
         except Exception as e:
-            return _structured_error(f"Failed to build ralplan skill invocation: {e}")
+            return _structured_error(f"Failed to create host-managed ralplan bootstrap: {e}")
 
     # -- permissions_list_open ---------------------------------------------
 

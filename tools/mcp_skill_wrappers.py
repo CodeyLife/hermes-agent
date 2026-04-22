@@ -227,6 +227,7 @@ def ralplan_invocation(
     *,
     interactive: bool = False,
     deliberate: bool = False,
+    runtime_note: str = "",
 ) -> Dict[str, Any]:
     flags = []
     if interactive:
@@ -234,5 +235,5 @@ def ralplan_invocation(
     if deliberate:
         flags.append("--deliberate")
     full_instruction = " ".join([*flags, instruction]).strip()
-    result = build_bundled_skill_invocation("ralplan", full_instruction)
+    result = build_bundled_skill_invocation("ralplan", full_instruction, runtime_note=runtime_note)
     return _append_required_skill_manifest(result, RALPLAN_REQUIRED_SKILLS)
