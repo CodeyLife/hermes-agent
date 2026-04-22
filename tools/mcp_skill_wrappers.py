@@ -16,15 +16,18 @@ BUNDLED_MCP_SKILLS: Dict[str, str] = {
     "autopilot": "autopilot",
     "deep-interview": "deep-interview",
     "plan": "plan",
+    "planner": "planner",
+    "architect": "architect",
+    "critic": "critic",
     "ralph": "ralph",
     "ralplan": "ralplan",
 }
 
-RALPLAN_SUPPORTING_ASSETS = (
-    Path("my_skills/plan/SKILL.md"),
-    Path("my_skills/ralplan/references/roles/planner.md"),
-    Path("my_skills/ralplan/references/roles/architect.md"),
-    Path("my_skills/ralplan/references/roles/critic.md"),
+RALPLAN_REQUIRED_SKILLS = (
+    ("plan", "Base planning workflow and consensus-mode details."),
+    ("planner", "Planner perspective pass for drafting and revising the plan."),
+    ("architect", "Architect perspective pass for tradeoffs and design review."),
+    ("critic", "Critic perspective pass for plan quality and testability review."),
 )
 
 
@@ -114,42 +117,52 @@ def build_bundled_skill_invocation(
     }
 
 
-def _append_supporting_assets(result: Dict[str, Any], asset_paths: tuple[Path, ...]) -> Dict[str, Any]:
-    """Inline workflow support assets so MCP hosts need no local Codex install.
+def _append_required_skill_manifest(
+    result: Dict[str, Any],
+    required_skills: tuple[tuple[str, str], ...],
+) -> Dict[str, Any]:
+    """Append on-demand role-skill retrieval instructions without inlining them."""
+    root = _repo_root()
+    manifest: list[dict[str, str]] = []
+    for name, purpose in required_skills:
+        skill_dir = _bundled_skill_dir(name)
+        skill_path = skill_dir / "SKILL.md"
+        if not skill_path.exists():
+            raise FileNotFoundError(f"Bundled workflow skill not found: {name}")
+        manifest.append(
+            {
+                "name": name,
+                "path": _repo_relative(skill_path),
+                "fetch_tool": "bundled_skill_read",
+                "fetch_args": f'{{"name": "{name}"}}',
+                "purpose": purpose,
+            }
+        )
 
-    ``_build_skill_message`` lists supporting files when they live below the
-    invoked skill directory, but ralplan depends on a sibling ``plan`` skill and
-    role prompts.  MCP clients often cannot call Hermes ``skill_view`` against
-    these repo-private assets, so the ralplan wrapper makes the dependency
-    explicit and self-contained.
-    """
     sections = [
         "",
-        "[Bundled workflow support assets for MCP hosts]",
+        "[Bundled role skills for on-demand retrieval]",
         (
-            "Use these definitions when executing the workflow. They are inlined "
-            "because this MCP tool returns a prompt package; the MCP server does "
-            "not run Planner/Architect/Critic agents by itself."
+            "Do not assume Planner / Architect / Critic subagents exist. Fetch "
+            "these bundled skills only when needed by calling the Hermes MCP "
+            "`bundled_skill_read` tool, then apply each skill as a sequential "
+            "perspective pass in the same host context."
         ),
     ]
-    included_assets: list[str] = []
-    root = _repo_root()
-    for rel_path in asset_paths:
-        asset_path = root / rel_path
-        if not asset_path.exists():
-            raise FileNotFoundError(f"Bundled workflow asset not found: {rel_path.as_posix()}")
-        included_assets.append(rel_path.as_posix())
-        sections.extend(
-            [
-                "",
-                f"--- BEGIN {rel_path.as_posix()} ---",
-                asset_path.read_text(encoding="utf-8").strip(),
-                f"--- END {rel_path.as_posix()} ---",
-            ]
+    for item in manifest:
+        sections.append(
+            f'- `{item["name"]}`: call `bundled_skill_read(name="{item["name"]}")` '
+            f'to fetch `{item["path"]}`. Purpose: {item["purpose"]}'
         )
 
     result["invocation_message"] = str(result["invocation_message"]).rstrip() + "\n" + "\n".join(sections)
-    result["included_assets"] = included_assets
+    result["required_bundled_skills"] = manifest
+    result["client_action"] = (
+        "Submit invocation_message to the MCP host agent. When the workflow "
+        "needs role guidance, call bundled_skill_read for the required skill "
+        "name (plan, planner, architect, critic) and apply it as an in-context "
+        "perspective pass. This tool does not execute the workflow by itself."
+    )
     return result
 
 
@@ -222,4 +235,4 @@ def ralplan_invocation(
         flags.append("--deliberate")
     full_instruction = " ".join([*flags, instruction]).strip()
     result = build_bundled_skill_invocation("ralplan", full_instruction)
-    return _append_supporting_assets(result, RALPLAN_SUPPORTING_ASSETS)
+    return _append_required_skill_manifest(result, RALPLAN_REQUIRED_SKILLS)

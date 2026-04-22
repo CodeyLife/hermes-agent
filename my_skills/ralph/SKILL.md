@@ -87,6 +87,12 @@ Complex tasks often fail silently: partial implementations get declared "done", 
    - After the deslop pass, re-run all tests/build/lint and read the output to confirm they still pass.
    - If post-deslop regression fails, roll back cleaner changes or fix and retry. Then rerun Step 7.5 and Step 7.6 until the regression is green.
    - Do not proceed to completion until post-deslop regression is green (unless `--no-deslop` explicitly skipped the deslop pass).
+7.7 **Mandatory经验沉淀检查**:
+   - After verification is green and before declaring completion, inspect whether the session produced any reusable durable knowledge.
+   - If you identified **stable facts / preferences / constraints / pitfalls** worth preserving, write them with `memory_write(...)`.
+   - If you identified a **repeatable workflow / procedure / pattern** that should be reusable in future tasks, write it with `skill_create_or_patch(...)`.
+   - Only persist knowledge that is verified, reusable, and not task-local speculation.
+   - If nothing qualifies, say so explicitly in the final report: `已检查，暂无可沉淀经验。`
 8. **On approval**: Run `/cancel` to cleanly exit and clean up all state files
 9. **On rejection**: Fix the issues raised, then re-verify at the same tier
 </Steps>
@@ -98,6 +104,7 @@ Complex tasks often fail silently: partial implementations get declared "done", 
 - If ToolSearch finds no MCP tools or Codex is unavailable, proceed with architect agent verification alone -- never block on external tools
 - Use `state_write` / `state_read` for ralph mode state persistence between iterations
 - Persist context snapshot path in Ralph mode state so later phases and agents share the same grounding context
+- Before completion, use `memory_write` for reusable durable facts and `skill_create_or_patch` for reusable verified workflows when appropriate
 </Tool_Usage>
 
 ## State Management
@@ -181,6 +188,7 @@ Why bad: These are independent tasks that should run in parallel, not sequential
 - [ ] Architect verification passed (STANDARD tier minimum)
 - [ ] ai-slop-cleaner pass completed on changed files (or --no-deslop specified)
 - [ ] Post-deslop regression tests pass
+- [ ] Experience distillation checked; reusable knowledge persisted with `memory_write` / `skill_create_or_patch`, or explicitly reported as none
 - [ ] `/cancel` run for clean state cleanup
 </Final_Checklist>
 

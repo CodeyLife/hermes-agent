@@ -42,10 +42,115 @@ $plan --consensus --interactive <arguments>
 ```
 
 When invoked through Hermes MCP, the `ralplan` tool returns a self-contained
-prompt package: this skill, the bundled Codex-style `plan` skill, and the
-Planner / Architect / Critic role definitions are included for the MCP host.
-The MCP server does not execute the multi-agent loop internally; the host agent
-must consume the returned `invocation_message` and follow the workflow.
+prompt package focused on the consensus flow. The MCP server does not execute
+the multi-agent loop internally; the host agent must consume the returned
+`invocation_message` and follow the workflow.
+
+The Planner / Architect / Critic role skills are **not** inlined into the
+`ralplan` response. Fetch them on demand with the Hermes MCP
+`bundled_skill_read` tool:
+
+- `bundled_skill_read(name="plan")` for the base planning workflow.
+- `bundled_skill_read(name="planner")` for the Planner perspective pass.
+- `bundled_skill_read(name="architect")` for the Architect perspective pass.
+- `bundled_skill_read(name="critic")` for the Critic perspective pass.
+
+### Pure MCP Host Compatibility
+
+Assume the MCP host does **not** have `AskUserQuestion`, `ask_codex`, or
+Planner / Architect / Critic subagent tools. The role skills fetched through
+`bundled_skill_read` are prompt instructions to apply sequentially in the same
+host context, not external agents.
+
+For pure MCP hosts:
+- Ask required user questions in normal chat instead of `AskUserQuestion`.
+- Fetch `planner`, `architect`, and `critic` with `bundled_skill_read` only
+  when needed, then perform those passes sequentially in the same host agent
+  context. Do not claim that external reviewers or subagents ran.
+- Treat `ask_codex(agent_role=...)` as an instruction to switch perspective
+  locally: first draft as Planner, then review as Architect, then evaluate as
+  Critic.
+- Use host-native file/search/shell abilities if available. If not available,
+  base the plan only on evidence already present in the conversation or from
+  Hermes MCP tools such as `task_context_bundle`, `session_recall_search`,
+  `memory_read`, `skills_list`, and `skill_view_safe`.
+- Do not call nonexistent Hermes MCP tools such as `AskUserQuestion`,
+  `ask_codex`, `Read`, `Write`, `Grep`, `Glob`, or `Bash`.
+- For execution handoff from a pure MCP host, call the Hermes `ralph` MCP tool
+  with the approved plan summary to obtain a new `invocation_message`, then
+  submit that message to the host agent.
+- Plan persistence is host-owned. The Hermes MCP `ralplan` tool itself does not
+  write `.omx/plans/` or any source files, but the workflow **must still
+  produce a plan Markdown document**. If the host can write files, save it as
+  `.omx/plans/{task-slug}.md`; otherwise output the same Markdown in chat under
+  `# Current Approved Plan`.
+
+### Required Plan Markdown Output
+
+Every ralplan run must produce a concrete Markdown plan document before any
+`ralph` handoff. The document is the handoff contract and must be specific
+enough that execution can proceed without guessing.
+
+Use this structure:
+
+```md
+# Plan: <task title>
+
+## Requirements Summary
+- Goal:
+- Scope:
+- Non-goals:
+- Constraints:
+- Evidence used:
+
+## Current Priority Order
+| Priority | Step | Why now | Depends on | Status |
+|---|---|---|---|---|
+| P0 | ... | ... | ... | planned |
+
+## Acceptance Criteria
+- [ ] Concrete, testable criterion
+
+## Implementation Steps
+1. [P0] Step title
+   - Files/areas:
+   - Action:
+   - Expected result:
+   - Verification:
+
+## RALPLAN-DR Summary
+- Principles:
+- Decision Drivers:
+- Options considered:
+- Chosen option and invalidation rationale:
+
+## ADR
+- Decision:
+- Drivers:
+- Alternatives considered:
+- Why chosen:
+- Consequences:
+- Follow-ups:
+
+## Risks and Mitigations
+| Risk | Impact | Mitigation |
+|---|---|---|
+
+## Verification Plan
+- Unit:
+- Integration:
+- E2E/manual:
+- Observability/logging:
+
+## Ralph MCP Handoff
+- Approved plan summary to pass to `ralph`:
+- Constraints to preserve:
+- Expected verification evidence:
+```
+
+Keep priorities live: if Architect or Critic feedback changes the order,
+update `Current Priority Order` and the `[P0/P1/P2]` tags in Implementation
+Steps before approval.
 
 The consensus workflow:
 1. **Planner** creates initial plan and a compact **RALPLAN-DR summary** before review:
@@ -54,9 +159,9 @@ The consensus workflow:
    - Viable Options (>=2) with bounded pros/cons
    - If only one viable option remains, explicit invalidation rationale for alternatives
    - Deliberate mode only: pre-mortem (3 scenarios) + expanded test plan (unit/integration/e2e/observability)
-2. **User feedback** *(--interactive only)*: If `--interactive` is set, use `AskUserQuestion` to present the draft plan **plus the Principles / Drivers / Options summary** before review (Proceed to review / Request changes / Skip review). Otherwise, automatically proceed to review.
-3. **Architect** reviews for architectural soundness and must provide the strongest steelman antithesis, at least one real tradeoff tension, and (when possible) synthesis — **await completion before step 4**. In deliberate mode, Architect should explicitly flag principle violations.
-4. **Critic** evaluates against quality criteria — run only after step 3 completes. Critic must enforce principle-option consistency, fair alternatives, risk mitigation clarity, testable acceptance criteria, and concrete verification steps. In deliberate mode, Critic must reject missing/weak pre-mortem or expanded test plan.
+2. **User feedback** *(--interactive only)*: If `--interactive` is set, ask the user in normal chat to review the draft plan **plus the Principles / Drivers / Options summary** before review (Proceed to review / Request changes / Skip review). Otherwise, automatically proceed to review.
+3. **Architect perspective** reviews for architectural soundness and must provide the strongest steelman antithesis, at least one real tradeoff tension, and (when possible) synthesis — complete this pass before step 4. In deliberate mode, explicitly flag principle violations.
+4. **Critic perspective** evaluates against quality criteria — run only after step 3 completes. Critic must enforce principle-option consistency, fair alternatives, risk mitigation clarity, testable acceptance criteria, and concrete verification steps. In deliberate mode, Critic must reject missing/weak pre-mortem or expanded test plan.
 5. **Re-review loop** (max 5 iterations): Any non-`APPROVE` Critic verdict (`ITERATE` or `REJECT`) MUST run the same full closed loop:
    a. Collect Architect + Critic feedback
    b. Revise the plan with Planner
@@ -64,9 +169,9 @@ The consensus workflow:
    d. Return to Critic evaluation
    e. Repeat this loop until Critic returns `APPROVE` or 5 iterations are reached
    f. If 5 iterations are reached without `APPROVE`, present the best version to the user
-6. On Critic approval *(--interactive only)*: If `--interactive` is set, use `AskUserQuestion` to present the plan with approval options (Approve and execute via ralph / Approve and implement via team / Request changes / Reject). Final plan must include ADR (Decision, Drivers, Alternatives considered, Why chosen, Consequences, Follow-ups), an explicit available-agent-types roster, concrete follow-up staffing guidance for both `ralph` and `team`, suggested reasoning levels by lane, explicit `omx team` / `$team` launch hints, and a concrete **team verification** path. Otherwise, output the final plan and stop.
-7. *(--interactive only)* User chooses: Approve (ralph or team), Request changes, or Reject
-8. *(--interactive only)* On approval: invoke `$ralph` for sequential execution or `$team` for parallel team execution with the explicit available-agent-types roster, reasoning-by-lane guidance, role/staffing allocation guidance, launch hints, and verification-path guidance from the approved plan -- never implement directly
+6. On Critic approval, finalize the plan Markdown document. It must include Requirements Summary, Current Priority Order, Acceptance Criteria, Implementation Steps, RALPLAN-DR Summary, ADR, Risks and Mitigations, Verification Plan, and Ralph MCP Handoff. If `--interactive` is set, ask the user in normal chat to choose (Approve and execute via ralph / Request changes / Reject). Otherwise, output the final plan and stop.
+7. *(--interactive only)* User chooses: Approve via ralph, Request changes, or Reject
+8. *(--interactive only)* On approval: call the Hermes `ralph` MCP tool with the approved plan summary to obtain the next `invocation_message`; never implement directly.
 
 > **Important:** Steps 3 and 4 MUST run sequentially. Do NOT issue both agent calls in the same parallel batch. Always await the Architect result before invoking Critic.
 
@@ -77,15 +182,16 @@ Follow the Plan skill's full documentation for consensus mode details.
 Before consensus planning or execution handoff, ensure a grounded context snapshot exists:
 
 1. Derive a task slug from the request.
-2. Reuse the latest relevant snapshot in `.hermes/context/{slug}-*.md` when available.
-3. If none exists, create `.hermes/context/{slug}-{timestamp}.md` (UTC `YYYYMMDDTHHMMSSZ`) with:
+2. Reuse the latest relevant snapshot in `.omx/context/{slug}-*.md` when running under OMX.
+3. If none exists and the host has file-write capability, create `.omx/context/{slug}-{timestamp}.md` (UTC `YYYYMMDDTHHMMSSZ`) with:
    - task statement
    - desired outcome
    - known facts/evidence
    - constraints
    - unknowns/open questions
    - likely codebase touchpoints
-4. If ambiguity remains high, gather brownfield facts first. When session guidance enables `USE_OMX_EXPLORE_CMD`, prefer `omx explore` for simple read-only repository lookups with narrow, concrete prompts; otherwise use the richer normal explore path. Then run `$deep-interview --quick <task>` before continuing.
+4. If the host cannot write files, keep the snapshot in the conversation and label it "Context Snapshot".
+5. If ambiguity remains high, gather brownfield facts first using available host tools and Hermes MCP tools (`task_context_bundle`, `session_recall_search`, `memory_read`, `skills_list`, `skill_view_safe`). If no inspection tools are available, ask one focused clarification question in normal chat before continuing.
 
 Do not hand off to execution modes until this intake is complete; if urgency forces progress, explicitly document the risk tradeoffs.
 
@@ -93,7 +199,7 @@ Do not hand off to execution modes until this intake is complete; if urgency for
 
 ### Why the Gate Exists
 
-Execution modes (ralph, autopilot, team, ultrawork) spin up heavy multi-agent orchestration. When launched on a vague request like "ralph improve the app", agents have no clear target — they waste cycles on scope discovery that should happen during planning, often delivering partial or misaligned work that requires rework.
+Execution wrappers such as `ralph` and `autopilot` require a clear target. When launched on a vague request like "ralph improve the app", the host agent has no clear scope — it wastes cycles on discovery that should happen during planning, often delivering partial or misaligned work that requires rework.
 
 The ralplan-first gate intercepts underspecified execution requests and redirects them through the ralplan consensus planning workflow. This ensures:
 - **Explicit scope**: A PRD defines exactly what will be built
@@ -106,16 +212,12 @@ The ralplan-first gate intercepts underspecified execution requests and redirect
 **Passes the gate** (specific enough for direct execution):
 - `ralph fix the null check in src/hooks/bridge.ts:326`
 - `autopilot implement issue #42`
-- `team add validation to function processKeywordDetector`
 - `ralph do:\n1. Add input validation\n2. Write tests\n3. Update README`
-- `ultrawork add the user model in src/models/user.ts`
 
 **Gated — redirected to ralplan** (needs scoping first):
 - `ralph fix this`
 - `autopilot build the app`
-- `team improve performance`
 - `ralph add authentication`
-- `ultrawork make it better`
 
 **Bypass the gate** (when you know what you want):
 - `force: ralph refactor the auth module`
@@ -131,7 +233,7 @@ The gate auto-passes when it detects **any** concrete signal. You do not need al
 | Issue/PR number | `ralph implement #42` | Has a concrete work item |
 | camelCase symbol | `ralph fix processKeywordDetector` | Names a specific function |
 | PascalCase symbol | `ralph update UserModel` | Names a specific class |
-| snake_case symbol | `team fix user_model` | Names a specific identifier |
+| snake_case symbol | `ralph fix user_model` | Names a specific identifier |
 | Test runner | `ralph npm test && fix failures` | Has an explicit test target |
 | Numbered steps | `ralph do:\n1. Add X\n2. Test Y` | Structured deliverables |
 | Acceptance criteria | `ralph add login - acceptance criteria: ...` | Explicit success definition |
@@ -148,10 +250,10 @@ The gate auto-passes when it detects **any** concrete signal. You do not need al
    - **Planner** creates initial plan (which files, what auth method, what tests)
    - **Architect** reviews for soundness
    - **Critic** validates quality and testability
-5. On consensus approval, user chooses execution path:
-   - **ralph**: sequential execution with verification
-   - **team**: parallel coordinated agents
-6. Execution begins with a clear, bounded plan
+5. On consensus approval, call the Hermes `ralph` MCP tool with the approved
+   plan summary to obtain a follow-up `invocation_message`.
+6. The host agent continues with a clear, bounded plan in the same MCP-hosted
+   workflow.
 
 ### Troubleshooting
 

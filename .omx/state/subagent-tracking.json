@@ -319,6 +319,29 @@
           "turn_count": 3
         }
       }
+    },
+    "omx-1776819863803-uanewp": {
+      "session_id": "omx-1776819863803-uanewp",
+      "leader_thread_id": "019db2b7-85f6-7411-8d3c-fcd82fdd62ae",
+      "updated_at": "2026-04-22T02:55:16.244Z",
+      "threads": {
+        "019db2b7-85f6-7411-8d3c-fcd82fdd62ae": {
+          "thread_id": "019db2b7-85f6-7411-8d3c-fcd82fdd62ae",
+          "kind": "leader",
+          "first_seen_at": "2026-04-22T01:28:09.595Z",
+          "last_seen_at": "2026-04-22T02:19:28.423Z",
+          "last_turn_id": "019db2f5-8969-7501-b147-e739b1078dc6",
+          "turn_count": 8
+        },
+        "019db2fc-c82e-79d2-b282-834be5f0017b": {
+          "thread_id": "019db2fc-c82e-79d2-b282-834be5f0017b",
+          "kind": "subagent",
+          "first_seen_at": "2026-04-22T02:24:01.299Z",
+          "last_seen_at": "2026-04-22T02:55:16.244Z",
+          "last_turn_id": "019db31b-be77-7281-9f4f-3ebba1e835c9",
+          "turn_count": 10
+        }
+      }
     }
   }
 }

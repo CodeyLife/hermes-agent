@@ -1,24 +1,25 @@
 """
-Hermes MCP Server：暴露消息会话与本地学习资产。
+Hermes MCP Server：暴露本地学习资产与 workflow 提示包。
 
 该模块会启动一个基于 stdio 的 MCP 服务端，让任意 MCP 客户端
-（Claude Code、Cursor、Codex、Trae 等）通过两类受限能力与 Hermes 交互：
+（Claude Code、Cursor、Codex、Trae 等）通过受限能力与 Hermes 交互。
 
-1. 面向会话、消息、事件与审批的消息桥接工具。
-2. 面向内置记忆、会话回忆与当前 profile 本地技能的确定性本地学习工具。
+当前 MCP 服务范围聚焦于：
+1. 当前 profile 下的内置记忆、确定性会话回忆与本地技能。
+2. Trae 项目规则初始化与任务前上下文包。
+3. Hermes bundled workflow skills 的提示包包装器。
+4. 当前 MCP bridge 生命周期内观察到的审批请求。
 
-消息能力面与 OpenClaw 的 9 个 MCP 通道桥接工具保持一致：
-  conversations_list, conversation_get, messages_read, attachments_fetch,
-  events_poll, events_wait, messages_send, permissions_list_open,
-  permissions_respond
+注意：本服务当前不提供完整消息会话桥接工具；permissions_* 仅处理
+本 MCP bridge 进程启动后观察到的审批请求，不代表完整消息通道能力。
 
-额外提供：
-  channels_list
+提供的 MCP tools：
   memory_read, memory_write, session_recall_search
   skills_list, skill_view_safe, skill_create_or_patch
-  autopilot, deep_interview, ralph, ralplan
   task_context_bundle, init
-  plan_skill_read
+  bundled_skill_read, plan_skill_read, plan
+  autopilot, deep_interview, ralph, ralplan
+  permissions_list_open, permissions_respond
 
 用法：
     hermes mcp serve
@@ -53,11 +54,14 @@ from urllib.request import url2pathname
 logger = logging.getLogger("hermes.mcp_serve")
 
 MCP_SERVER_INSTRUCTIONS = (
-    "Hermes Agent 的 MCP 桥接服务。可使用这些工具跨消息平台访问会话，"
-    "并读取 Hermes 的本地学习资产，例如内置记忆、确定性会话回忆和当前"
-    "profile 的本地技能。还可初始化 Trae 项目规则、读取 Hermes 内置 /plan skill，"
-    "以及把部分内置 workflow skill（autopilot / deep-interview / ralph / ralplan）"
-    "包装成专用 MCP tools，供 Trae 等客户端直接调用。"
+    "Hermes Agent 的 MCP 学习资产与 workflow 提示包服务。可使用这些工具读取"
+    "当前 profile 的内置记忆、确定性会话回忆和本地技能，初始化 Trae 项目规则，"
+    "并获取 Hermes bundled workflow skill（plan / planner / architect / "
+    "critic / autopilot / deep-interview / ralph / ralplan）的原文或宿主侧"
+    "调用提示包。workflow 包装工具只返回 "
+    "invocation_message，不会在 MCP 服务端内部执行规划、编码或多代理流程。"
+    "permissions_* 仅处理本 MCP bridge 进程启动后观察到的审批请求，不代表完整"
+    "消息会话桥接能力。"
 )
 
 # ---------------------------------------------------------------------------
@@ -502,7 +506,7 @@ class EventBridge:
             approval = self._pending_approvals.pop(approval_id, None)
 
         if not approval:
-            return _structured_error(f"Approval not found: {approval_id}")
+            return {"success": False, "error": f"Approval not found: {approval_id}"}
 
         self._enqueue(QueueEvent(
             cursor=0,  # Will be set by _enqueue
@@ -665,7 +669,331 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
 
     bridge = event_bridge or EventBridge()
 
+    def _plan_uri(plan_id: str) -> str:
+        return f"hermes://plans/{plan_id}"
+
+    def _plan_metadata_uri(plan_id: str) -> str:
+        return f"hermes://plans/{plan_id}/metadata"
+
+    def _plan_review_uri(plan_id: str, iteration: int, role: str) -> str:
+        return f"hermes://plans/{plan_id}/reviews/{int(iteration)}/{role}"
+
+    def _plan_context_uri(plan_id: str, snapshot_id: str) -> str:
+        return f"hermes://plans/{plan_id}/contexts/{snapshot_id}"
+
+    def _skill_instruction(skill_name: str, *, instruction: str = "") -> str:
+        normalized = skill_name.strip().lower().replace("_", "-")
+        if normalized == "plan":
+            from tools.mcp_skill_wrappers import plan_invocation
+
+            result = plan_invocation(instruction or "")
+        elif normalized == "ralplan":
+            from tools.mcp_skill_wrappers import ralplan_invocation
+
+            result = ralplan_invocation(instruction or "")
+        elif normalized == "ralph":
+            from tools.mcp_skill_wrappers import ralph_invocation
+
+            result = ralph_invocation(instruction or "")
+        else:
+            from tools.mcp_skill_wrappers import build_bundled_skill_invocation
+
+            result = build_bundled_skill_invocation(normalized, instruction or "")
+        return str(result.get("invocation_message") or "")
+
+    # -- prompts -----------------------------------------------------------
+
+    @mcp.prompt(name="plan", description="Hermes plan workflow prompt for MCP hosts.")
+    def plan_prompt(
+        instruction: str,
+        mode: str = "auto",
+        interactive: bool = False,
+        deliberate: bool = False,
+        review: bool = False,
+    ) -> str:
+        from tools.mcp_skill_wrappers import plan_invocation
+
+        result = plan_invocation(
+            instruction,
+            mode=mode,
+            interactive=interactive,
+            deliberate=deliberate,
+            review=review,
+        )
+        return str(result.get("invocation_message") or "")
+
+    @mcp.prompt(name="ralplan", description="Hermes consensus planning prompt for MCP hosts.")
+    def ralplan_prompt(
+        instruction: str,
+        interactive: bool = False,
+        deliberate: bool = False,
+    ) -> str:
+        from tools.mcp_skill_wrappers import ralplan_invocation
+
+        result = ralplan_invocation(
+            instruction,
+            interactive=interactive,
+            deliberate=deliberate,
+        )
+        return str(result.get("invocation_message") or "")
+
+    @mcp.prompt(name="planner", description="Planner perspective prompt for revising or drafting a plan.")
+    def planner_prompt(
+        plan_uri: Optional[str] = None,
+        instruction: str = "",
+        deliberate: bool = False,
+    ) -> str:
+        mode_note = "deliberate" if deliberate else "short"
+        details = []
+        if plan_uri:
+            details.append(f"Use the current plan resource at `{plan_uri}` as the source of truth.")
+        if instruction:
+            details.append(f"Task instruction: {instruction}")
+        details.append(f"Consensus mode: {mode_note}.")
+        return _skill_instruction("planner", instruction=" ".join(details).strip())
+
+    @mcp.prompt(name="architect", description="Architect review perspective prompt for a saved plan.")
+    def architect_prompt(plan_uri: str) -> str:
+        return _skill_instruction(
+            "architect",
+            instruction=f"Review the plan at resource URI `{plan_uri}` and produce an architecture review.",
+        )
+
+    @mcp.prompt(name="critic", description="Critic review perspective prompt for a saved plan.")
+    def critic_prompt(plan_uri: str, deliberate: bool = False) -> str:
+        suffix = " Use deliberate review rigor." if deliberate else ""
+        return _skill_instruction(
+            "critic",
+            instruction=f"Evaluate the plan at resource URI `{plan_uri}` and return a verdict.{suffix}",
+        )
+
+    # -- resources ---------------------------------------------------------
+
+    @mcp.resource(
+        "hermes://skills/{name}",
+        name="hermes-skill",
+        description="Bundled Hermes MCP skill content.",
+        mime_type="text/markdown",
+    )
+    def skill_resource(name: str) -> str:
+        from tools.plan_tool import read_bundled_skill
+
+        result = read_bundled_skill(name)
+        if not result.get("success"):
+            raise FileNotFoundError(result.get("error") or f"Unknown bundled skill: {name}")
+        return str(result.get("content") or "")
+
+    @mcp.resource(
+        "hermes://plans/{plan_id}",
+        name="hermes-plan",
+        description="Stored MCP planning markdown artifact.",
+        mime_type="text/markdown",
+    )
+    def plan_resource(plan_id: str) -> str:
+        from tools.mcp_planning_store import read_plan_markdown
+
+        return read_plan_markdown(plan_id)
+
+    @mcp.resource(
+        "hermes://plans/{plan_id}/metadata",
+        name="hermes-plan-metadata",
+        description="Stored MCP planning metadata JSON.",
+        mime_type="application/json",
+    )
+    def plan_metadata_resource(plan_id: str) -> str:
+        from tools.mcp_planning_store import read_metadata
+
+        return json.dumps(read_metadata(plan_id), indent=2, ensure_ascii=False)
+
+    @mcp.resource(
+        "hermes://plans/{plan_id}/reviews/{iteration}/{role}",
+        name="hermes-plan-review",
+        description="Stored architect/critic review markdown.",
+        mime_type="text/markdown",
+    )
+    def plan_review_resource(plan_id: str, iteration: str, role: str) -> str:
+        from tools.mcp_planning_store import read_review
+
+        return read_review(plan_id, int(iteration), role)
+
+    @mcp.resource(
+        "hermes://plans/{plan_id}/contexts/{snapshot_id}",
+        name="hermes-plan-context",
+        description="Stored planning context snapshot markdown.",
+        mime_type="text/markdown",
+    )
+    def plan_context_resource(plan_id: str, snapshot_id: str) -> str:
+        from tools.mcp_planning_store import read_context_snapshot
+
+        return read_context_snapshot(plan_id, snapshot_id)
+
     # -- memory_read -------------------------------------------------------
+
+    @mcp.tool()
+    def planning_session_create(
+        instruction: str,
+        mode: str = "ralplan",
+        interactive: bool = False,
+        deliberate: bool = False,
+    ) -> str:
+        """Create a persisted planning session under the profile-scoped .hermes/plan tree."""
+        try:
+            from tools.mcp_planning_store import ensure_plan_session, plan_storage_path_display
+
+            metadata = ensure_plan_session(
+                instruction,
+                mode=mode,
+                interactive=interactive,
+                deliberate=deliberate,
+            )
+            plan_id = metadata["plan_id"]
+            prompt_name = "ralplan" if str(mode).strip().lower() == "ralplan" else "plan"
+            result = {
+                "success": True,
+                "plan_id": plan_id,
+                "status": metadata.get("status", "draft"),
+                "plan_resource_uri": _plan_uri(plan_id),
+                "metadata_resource_uri": _plan_metadata_uri(plan_id),
+                "storage_path_display": plan_storage_path_display(plan_id),
+                "next_action": {
+                    "type": "get_prompt",
+                    "name": prompt_name,
+                    "arguments": {
+                        "instruction": instruction,
+                        "interactive": bool(interactive),
+                        "deliberate": bool(deliberate),
+                    },
+                },
+            }
+            if prompt_name == "plan":
+                result["next_action"]["arguments"]["mode"] = mode
+            return json.dumps(result, indent=2, ensure_ascii=False)
+        except Exception as e:
+            return _structured_error(f"Failed to create planning session: {e}")
+
+    @mcp.tool()
+    def planning_context_attach(
+        plan_id: str,
+        context_markdown: str,
+        snapshot_id: Optional[str] = None,
+        source: Optional[str] = None,
+    ) -> str:
+        """Attach a markdown context snapshot to a planning session."""
+        try:
+            from tools.mcp_planning_store import save_context_snapshot
+
+            resolved_snapshot = save_context_snapshot(
+                plan_id,
+                content=context_markdown,
+                snapshot_id=snapshot_id,
+            )
+            payload = {
+                "success": True,
+                "plan_id": plan_id,
+                "snapshot_id": resolved_snapshot,
+                "context_resource_uri": _plan_context_uri(plan_id, resolved_snapshot),
+            }
+            if source:
+                payload["source"] = source
+            return json.dumps(payload, indent=2, ensure_ascii=False)
+        except Exception as e:
+            return _structured_error(f"Failed to attach planning context: {e}")
+
+    @mcp.tool()
+    def planning_plan_save(
+        plan_id: str,
+        markdown: str,
+        status: str = "draft",
+        iteration: Optional[int] = None,
+    ) -> str:
+        """Persist plan markdown for a planning session."""
+        try:
+            from tools.mcp_planning_store import save_plan_markdown
+
+            metadata = save_plan_markdown(
+                plan_id,
+                markdown,
+                status=status,
+                iteration=iteration,
+            )
+            return json.dumps({
+                "success": True,
+                "plan_id": plan_id,
+                "status": metadata.get("status"),
+                "iteration": metadata.get("iteration"),
+                "plan_resource_uri": _plan_uri(plan_id),
+                "metadata_resource_uri": _plan_metadata_uri(plan_id),
+            }, indent=2, ensure_ascii=False)
+        except Exception as e:
+            return _structured_error(f"Failed to save plan markdown: {e}")
+
+    @mcp.tool()
+    def planning_review_save(
+        plan_id: str,
+        role: str,
+        iteration: int,
+        markdown: str,
+        verdict: Optional[str] = None,
+    ) -> str:
+        """Persist architect/critic review output for a planning session."""
+        try:
+            from tools.mcp_planning_store import save_review
+
+            metadata = save_review(
+                plan_id,
+                role=role,
+                iteration=iteration,
+                markdown=markdown,
+                verdict=verdict,
+            )
+            return json.dumps({
+                "success": True,
+                "plan_id": plan_id,
+                "status": metadata.get("status"),
+                "iteration": metadata.get("iteration"),
+                "latest_verdict": metadata.get("latest_verdict"),
+                "review_resource_uri": _plan_review_uri(plan_id, iteration, role),
+                "metadata_resource_uri": _plan_metadata_uri(plan_id),
+            }, indent=2, ensure_ascii=False)
+        except Exception as e:
+            return _structured_error(f"Failed to save planning review: {e}")
+
+    @mcp.tool()
+    def planning_handoff_prepare(
+        plan_id: str,
+        target: str = "ralph",
+    ) -> str:
+        """Prepare a structured handoff for an approved planning artifact."""
+        try:
+            from tools.mcp_planning_store import read_metadata
+
+            normalized_target = str(target or "").strip().lower()
+            if normalized_target != "ralph":
+                return _structured_error("Only target='ralph' is currently supported")
+
+            metadata = read_metadata(plan_id)
+            plan_uri = _plan_uri(plan_id)
+            summary = (
+                f"Execute the approved plan at `{plan_uri}`. Preserve the validated "
+                f"constraints and provide verification evidence before completion."
+            )
+            from tools.mcp_skill_wrappers import ralph_invocation
+
+            handoff = ralph_invocation(summary)
+            return json.dumps({
+                "success": True,
+                "plan_id": plan_id,
+                "target": normalized_target,
+                "status": metadata.get("status"),
+                "plan_resource_uri": plan_uri,
+                "metadata_resource_uri": _plan_metadata_uri(plan_id),
+                "handoff_summary": summary,
+                "prompt_name": "ralph",
+                "prompt_args": {"instruction": summary},
+                "invocation_message": handoff.get("invocation_message"),
+            }, indent=2, ensure_ascii=False)
+        except Exception as e:
+            return _structured_error(f"Failed to prepare planning handoff: {e}")
 
     @mcp.tool()
     def memory_read() -> str:
@@ -1050,6 +1378,21 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
     # -- plan -------------------------------------------------------
 
     @mcp.tool()
+    def bundled_skill_read(name: str) -> str:
+        """读取 Hermes repo 内置 bundled skill 原文。
+
+        适用于需要按需获取 workflow 或角色 skill（如 plan / planner /
+        architect / critic）内容的 MCP 宿主。
+        """
+        try:
+            from tools.plan_tool import read_bundled_skill
+
+            result = read_bundled_skill(name)
+            return json.dumps(result, indent=2, ensure_ascii=False)
+        except Exception as e:
+            return _structured_error(f"Failed to read bundled skill: {e}")
+
+    @mcp.tool()
     def plan_skill_read() -> str:
         """读取 Hermes MCP 内置的 Codex 风格 plan skill 原文，供宿主规划时参考。"""
         try:
@@ -1090,6 +1433,15 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
                 deliberate=deliberate,
                 review=review,
             )
+            result["recommended_path"] = "prompt_resource_tool"
+            result["prompt_name"] = "plan"
+            result["prompt_args"] = {
+                "instruction": instruction,
+                "mode": mode,
+                "interactive": interactive,
+                "deliberate": deliberate,
+                "review": review,
+            }
             return json.dumps(result, indent=2, ensure_ascii=False)
         except Exception as e:
             return _structured_error(f"Failed to build plan skill invocation: {e}")
@@ -1205,6 +1557,13 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
                 interactive=interactive,
                 deliberate=deliberate,
             )
+            result["recommended_path"] = "prompt_resource_tool"
+            result["prompt_name"] = "ralplan"
+            result["prompt_args"] = {
+                "instruction": instruction,
+                "interactive": interactive,
+                "deliberate": deliberate,
+            }
             return json.dumps(result, indent=2, ensure_ascii=False)
         except Exception as e:
             return _structured_error(f"Failed to build ralplan skill invocation: {e}")
@@ -1215,8 +1574,9 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
     def permissions_list_open() -> str:
         """列出当前桥接会话中观察到的待处理审批请求。
 
-        返回桥接服务启动后看到的 exec 与插件审批请求。这里只包含当前在线
-        会话期间的审批，不包含桥接连接前的历史审批。
+        返回本 MCP bridge 进程启动后观察到的 exec 与插件审批请求。这里只包含
+        当前在线会话期间的审批，不包含 bridge 连接前的历史审批，也不代表完整
+        消息会话桥接能力。
         """
         approvals = bridge.list_pending_approvals()
         return json.dumps({
@@ -1244,7 +1604,7 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
             )
 
         result = bridge.respond_to_approval(id, decision)
-        return json.dumps(result, indent=2)
+        return json.dumps(result, indent=2, ensure_ascii=False)
 
     return mcp
 

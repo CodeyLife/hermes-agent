@@ -4,8 +4,8 @@ Tests for mcp_serve — Hermes MCP server.
 Three layers of tests:
 1. Unit tests — helpers, content extraction, attachment parsing
 2. EventBridge tests — queue mechanics, cursors, waiters, concurrency
-3. End-to-end tests — call actual MCP tools through FastMCP's tool manager
-   with real session data in SQLite and sessions.json
+3. End-to-end tests — call actual MCP learning/workflow tools through
+   FastMCP's tool manager with profile-scoped test data
 """
 
 import asyncio
@@ -546,6 +546,21 @@ def _run_tool(server, name, args=None, context=None):
     return json.loads(result) if isinstance(result, str) else result
 
 
+def _render_prompt(server, name, args=None, context=None):
+    result = server._prompt_manager.render_prompt(name, args or {}, context=context)
+    if asyncio.iscoroutine(result):
+        return asyncio.get_event_loop().run_until_complete(result)
+    return result
+
+
+def _read_resource(server, uri, context=None):
+    resource = asyncio.get_event_loop().run_until_complete(
+        server._resource_manager.get_resource(uri, context=context)
+    )
+    assert resource is not None, f"Resource not found: {uri}"
+    return asyncio.get_event_loop().run_until_complete(resource.read())
+
+
 def _context_with_roots(*roots: Path):
     async def _list_roots():
         return types.ListRootsResult(
@@ -570,277 +585,6 @@ def _event_loop():
     yield loop
     loop.close()
 
-
-class TestE2EConversationsList:
-    def test_list_all(self, mcp_server_e2e, _event_loop):
-        server, _ = mcp_server_e2e
-        result = _run_tool(server, "conversations_list")
-        assert result["count"] == 3
-        platforms = {c["platform"] for c in result["conversations"]}
-        assert platforms == {"telegram", "discord", "slack"}
-
-    def test_list_sorted_by_updated(self, mcp_server_e2e, _event_loop):
-        server, _ = mcp_server_e2e
-        result = _run_tool(server, "conversations_list")
-        keys = [c["session_key"] for c in result["conversations"]]
-        # Telegram (14:30) > Discord (13:00) > Slack (11:00)
-        assert keys[0] == "agent:main:telegram:dm:123456"
-        assert keys[1] == "agent:main:discord:group:789:456"
-        assert keys[2] == "agent:main:slack:group:C1234:U5678"
-
-    def test_filter_by_platform(self, mcp_server_e2e, _event_loop):
-        server, _ = mcp_server_e2e
-        result = _run_tool(server, "conversations_list", {"platform": "discord"})
-        assert result["count"] == 1
-        assert result["conversations"][0]["platform"] == "discord"
-
-    def test_filter_by_platform_case_insensitive(self, mcp_server_e2e, _event_loop):
-        server, _ = mcp_server_e2e
-        result = _run_tool(server, "conversations_list", {"platform": "TELEGRAM"})
-        assert result["count"] == 1
-
-    def test_search_by_name(self, mcp_server_e2e, _event_loop):
-        server, _ = mcp_server_e2e
-        result = _run_tool(server, "conversations_list", {"search": "Alice"})
-        assert result["count"] == 1
-        assert result["conversations"][0]["display_name"] == "Alice"
-
-    def test_search_no_match(self, mcp_server_e2e, _event_loop):
-        server, _ = mcp_server_e2e
-        result = _run_tool(server, "conversations_list", {"search": "nobody"})
-        assert result["count"] == 0
-
-    def test_limit(self, mcp_server_e2e, _event_loop):
-        server, _ = mcp_server_e2e
-        result = _run_tool(server, "conversations_list", {"limit": 2})
-        assert result["count"] == 2
-
-
-class TestE2EConversationGet:
-    def test_get_existing(self, mcp_server_e2e, _event_loop):
-        server, _ = mcp_server_e2e
-        result = _run_tool(server, "conversation_get",
-                          {"session_key": "agent:main:telegram:dm:123456"})
-        assert result["platform"] == "telegram"
-        assert result["display_name"] == "Alice"
-        assert result["chat_id"] == "123456"
-        assert result["input_tokens"] == 50000
-
-    def test_get_nonexistent(self, mcp_server_e2e, _event_loop):
-        server, _ = mcp_server_e2e
-        result = _run_tool(server, "conversation_get",
-                          {"session_key": "nonexistent:key"})
-        assert "error" in result
-
-
-class TestE2EMessagesRead:
-    def test_read_messages(self, mcp_server_e2e, _event_loop):
-        server, _ = mcp_server_e2e
-        result = _run_tool(server, "messages_read",
-                          {"session_key": "agent:main:telegram:dm:123456"})
-        assert result["count"] > 0
-        # Should filter out tool messages — only user/assistant
-        roles = {m["role"] for m in result["messages"]}
-        assert "tool" not in roles
-        assert "user" in roles
-        assert "assistant" in roles
-
-    def test_read_messages_content(self, mcp_server_e2e, _event_loop):
-        server, _ = mcp_server_e2e
-        result = _run_tool(server, "messages_read",
-                          {"session_key": "agent:main:telegram:dm:123456"})
-        contents = [m["content"] for m in result["messages"]]
-        assert "Hello Alice!" in contents
-        assert "Hi! How can I help?" in contents
-
-    def test_read_messages_have_ids(self, mcp_server_e2e, _event_loop):
-        server, _ = mcp_server_e2e
-        result = _run_tool(server, "messages_read",
-                          {"session_key": "agent:main:telegram:dm:123456"})
-        for msg in result["messages"]:
-            assert "id" in msg
-            assert msg["id"]  # non-empty
-
-    def test_read_with_limit(self, mcp_server_e2e, _event_loop):
-        server, _ = mcp_server_e2e
-        result = _run_tool(server, "messages_read",
-                          {"session_key": "agent:main:telegram:dm:123456",
-                           "limit": 2})
-        assert result["count"] == 2
-
-    def test_read_nonexistent_session(self, mcp_server_e2e, _event_loop):
-        server, _ = mcp_server_e2e
-        result = _run_tool(server, "messages_read",
-                          {"session_key": "nonexistent:key"})
-        assert "error" in result
-
-
-class TestE2EAttachmentsFetch:
-    def test_fetch_media_from_message(self, mcp_server_e2e, _event_loop):
-        server, _ = mcp_server_e2e
-        # First get message IDs
-        msgs = _run_tool(server, "messages_read",
-                        {"session_key": "agent:main:telegram:dm:123456"})
-        # Find the message with MEDIA: tag
-        media_msg = None
-        for m in msgs["messages"]:
-            if "MEDIA:" in m["content"]:
-                media_msg = m
-                break
-        assert media_msg is not None, "Should have a message with MEDIA: tag"
-
-        result = _run_tool(server, "attachments_fetch", {
-            "session_key": "agent:main:telegram:dm:123456",
-            "message_id": media_msg["id"],
-        })
-        assert result["count"] >= 1
-        assert result["attachments"][0]["type"] == "media"
-        assert result["attachments"][0]["path"] == "/tmp/screenshot.png"
-
-    def test_fetch_from_nonexistent_message(self, mcp_server_e2e, _event_loop):
-        server, _ = mcp_server_e2e
-        result = _run_tool(server, "attachments_fetch", {
-            "session_key": "agent:main:telegram:dm:123456",
-            "message_id": "99999",
-        })
-        assert "error" in result
-
-    def test_fetch_from_nonexistent_session(self, mcp_server_e2e, _event_loop):
-        server, _ = mcp_server_e2e
-        result = _run_tool(server, "attachments_fetch", {
-            "session_key": "nonexistent:key",
-            "message_id": "1",
-        })
-        assert "error" in result
-
-
-class TestE2EEventsPoll:
-    def test_poll_empty(self, mcp_server_e2e, _event_loop):
-        server, bridge = mcp_server_e2e
-        result = _run_tool(server, "events_poll")
-        assert result["events"] == []
-        assert result["next_cursor"] == 0
-
-    def test_poll_with_events(self, mcp_server_e2e, _event_loop):
-        from mcp_serve import QueueEvent
-        server, bridge = mcp_server_e2e
-        bridge._enqueue(QueueEvent(cursor=0, type="message",
-                                   session_key="agent:main:telegram:dm:123456",
-                                   data={"role": "user", "content": "Hello"}))
-        bridge._enqueue(QueueEvent(cursor=0, type="message",
-                                   session_key="agent:main:telegram:dm:123456",
-                                   data={"role": "assistant", "content": "Hi"}))
-
-        result = _run_tool(server, "events_poll")
-        assert len(result["events"]) == 2
-        assert result["events"][0]["content"] == "Hello"
-        assert result["events"][1]["content"] == "Hi"
-        assert result["next_cursor"] == 2
-
-    def test_poll_cursor_pagination(self, mcp_server_e2e, _event_loop):
-        from mcp_serve import QueueEvent
-        server, bridge = mcp_server_e2e
-        for i in range(5):
-            bridge._enqueue(QueueEvent(cursor=0, type="message",
-                                       session_key=f"s{i}"))
-
-        page1 = _run_tool(server, "events_poll", {"limit": 2})
-        assert len(page1["events"]) == 2
-        assert page1["next_cursor"] == 2
-
-        page2 = _run_tool(server, "events_poll",
-                         {"after_cursor": page1["next_cursor"], "limit": 2})
-        assert len(page2["events"]) == 2
-        assert page2["next_cursor"] == 4
-
-    def test_poll_session_filter(self, mcp_server_e2e, _event_loop):
-        from mcp_serve import QueueEvent
-        server, bridge = mcp_server_e2e
-        bridge._enqueue(QueueEvent(cursor=0, type="message", session_key="a"))
-        bridge._enqueue(QueueEvent(cursor=0, type="message", session_key="b"))
-        bridge._enqueue(QueueEvent(cursor=0, type="message", session_key="a"))
-
-        result = _run_tool(server, "events_poll",
-                          {"session_key": "b"})
-        assert len(result["events"]) == 1
-
-
-class TestE2EEventsWait:
-    def test_wait_timeout(self, mcp_server_e2e, _event_loop):
-        server, _ = mcp_server_e2e
-        result = _run_tool(server, "events_wait", {"timeout_ms": 100})
-        assert result["event"] is None
-        assert result["reason"] == "timeout"
-
-    def test_wait_with_existing_event(self, mcp_server_e2e, _event_loop):
-        from mcp_serve import QueueEvent
-        server, bridge = mcp_server_e2e
-        bridge._enqueue(QueueEvent(cursor=0, type="message",
-                                   session_key="test",
-                                   data={"content": "waiting for this"}))
-        result = _run_tool(server, "events_wait", {"timeout_ms": 100})
-        assert result["event"] is not None
-        assert result["event"]["content"] == "waiting for this"
-
-    def test_wait_caps_timeout(self, mcp_server_e2e, _event_loop):
-        """Timeout should be capped at 300000ms (5 min)."""
-        from mcp_serve import QueueEvent
-        server, bridge = mcp_server_e2e
-        bridge._enqueue(QueueEvent(cursor=0, type="message", session_key="t"))
-        # Even with huge timeout, should return immediately since event exists
-        result = _run_tool(server, "events_wait", {"timeout_ms": 999999})
-        assert result["event"] is not None
-
-
-class TestE2EMessagesSend:
-    def test_send_missing_args(self, mcp_server_e2e, _event_loop):
-        server, _ = mcp_server_e2e
-        result = _run_tool(server, "messages_send", {"target": "", "message": "hi"})
-        assert "error" in result
-
-    def test_send_delegates_to_tool(self, mcp_server_e2e, _event_loop, monkeypatch):
-        server, _ = mcp_server_e2e
-        mock = MagicMock(return_value=json.dumps({"success": True, "platform": "telegram"}))
-        monkeypatch.setattr("tools.send_message_tool.send_message_tool", mock)
-
-        result = _run_tool(server, "messages_send",
-                          {"target": "telegram:123456", "message": "Hello!"})
-        assert result["success"] is True
-        mock.assert_called_once()
-        call_args = mock.call_args[0][0]
-        assert call_args["action"] == "send"
-        assert call_args["target"] == "telegram:123456"
-
-
-class TestE2EChannelsList:
-    def test_channels_from_sessions(self, mcp_server_e2e, _event_loop):
-        server, _ = mcp_server_e2e
-        result = _run_tool(server, "channels_list")
-        assert result["count"] == 3
-        targets = {c["target"] for c in result["channels"]}
-        assert "telegram:123456" in targets
-        assert "discord:789" in targets
-        assert "slack:C1234" in targets
-
-    def test_channels_platform_filter(self, mcp_server_e2e, _event_loop):
-        server, _ = mcp_server_e2e
-        result = _run_tool(server, "channels_list", {"platform": "slack"})
-        assert result["count"] == 1
-        assert result["channels"][0]["target"] == "slack:C1234"
-
-    def test_channels_with_directory(self, mcp_server_e2e, _event_loop, monkeypatch):
-        import mcp_serve
-        monkeypatch.setattr(mcp_serve, "_load_channel_directory", lambda: {
-            "telegram": [
-                {"id": "123456", "name": "Alice", "type": "dm"},
-                {"id": "-100999", "name": "Dev Group", "type": "group"},
-            ],
-        })
-        # Need to recreate server to pick up the new mock
-        server, bridge = mcp_server_e2e
-        # The tool closure already captured the old mock, so test the function directly
-        directory = mcp_serve._load_channel_directory()
-        assert len(directory["telegram"]) == 2
 
 
 class TestE2EPermissions:
@@ -891,7 +635,8 @@ class TestE2EPermissions:
         server, _ = mcp_server_e2e
         result = _run_tool(server, "permissions_respond",
                           {"id": "nope", "decision": "deny"})
-        assert "error" in result
+        assert result["success"] is False
+        assert result["error"] == "Approval not found: nope"
 
 
 # ---------------------------------------------------------------------------
@@ -905,15 +650,14 @@ class TestToolRegistration:
         tool_names = {t.name for t in tools}
 
         expected = {
-            "conversations_list", "conversation_get", "messages_read",
-            "attachments_fetch", "events_poll", "events_wait",
-            "messages_send", "channels_list",
-            "permissions_list_open", "permissions_respond",
+            "planning_session_create", "planning_context_attach",
+            "planning_plan_save", "planning_review_save", "planning_handoff_prepare",
             "memory_read", "memory_write", "session_recall_search",
             "skills_list", "skill_view_safe", "skill_create_or_patch",
             "task_context_bundle", "init",
+            "bundled_skill_read", "plan_skill_read", "plan",
             "autopilot", "deep_interview", "ralph", "ralplan",
-            "plan_skill_read",
+            "permissions_list_open", "permissions_respond",
         }
         assert expected == tool_names, f"Missing: {expected - tool_names}, Extra: {tool_names - expected}"
 
@@ -922,13 +666,28 @@ class TestToolRegistration:
         for tool in server._tool_manager.list_tools():
             assert tool.description, f"Tool {tool.name} has no description"
 
-    def test_server_instructions_cover_learning_and_messaging(self, mcp_server_e2e, _event_loop):
+    def test_server_instructions_cover_learning_and_workflow_scope(self, mcp_server_e2e, _event_loop):
         server, _ = mcp_server_e2e
         text = server.instructions.lower()
         assert "记忆" in text
         assert "技能" in text
         assert "plan" in text
-        assert "/plan" in text
+        assert "invocation_message" in text
+        assert "不代表完整消息会话桥接能力" in text
+
+    def test_prompts_registered(self, mcp_server_e2e, _event_loop):
+        server, _ = mcp_server_e2e
+        prompts = {p.name for p in server._prompt_manager.list_prompts()}
+        assert {"plan", "ralplan", "planner", "architect", "critic"} <= prompts
+
+    def test_resource_templates_registered(self, mcp_server_e2e, _event_loop):
+        server, _ = mcp_server_e2e
+        templates = {t.uri_template for t in server._resource_manager.list_templates()}
+        assert "hermes://skills/{name}" in templates
+        assert "hermes://plans/{plan_id}" in templates
+        assert "hermes://plans/{plan_id}/metadata" in templates
+        assert "hermes://plans/{plan_id}/reviews/{iteration}/{role}" in templates
+        assert "hermes://plans/{plan_id}/contexts/{snapshot_id}" in templates
 
 
 class TestE2ELearningTools:
@@ -1423,7 +1182,7 @@ class TestE2ELearningTools:
 
         rule_file = Path(result["rules"]["absolute_path"])
         assert rule_file.exists()
-        assert "plan_skill_read()" in rule_file.read_text(encoding="utf-8")
+        assert "task_context_bundle(...)" in rule_file.read_text(encoding="utf-8")
         assert not (tmp_path / ".trae" / "mcp.json").exists()
 
     def test_init_prefers_client_root_over_server_cwd(self, mcp_server_e2e, _event_loop, tmp_path, monkeypatch):
@@ -1567,6 +1326,23 @@ class TestE2ELearningTools:
         assert "Strategic planning with optional interview workflow" in guide["content"]
         assert guide["path"] == "my_skills/plan/SKILL.md"
 
+    def test_bundled_skill_read_role_skills(self, mcp_server_e2e, _event_loop):
+        server, _ = mcp_server_e2e
+        planner = _run_tool(server, "bundled_skill_read", {"name": "planner"})
+        architect = _run_tool(server, "bundled_skill_read", {"name": "architect"})
+        critic = _run_tool(server, "bundled_skill_read", {"name": "critic"})
+
+        assert planner["success"] is True
+        assert planner["path"] == "my_skills/planner/SKILL.md"
+        assert "Pure MCP host planning perspective" in planner["content"]
+        assert "Do not assume `AskUserQuestion`, `ask_codex`" in planner["content"]
+        assert architect["success"] is True
+        assert architect["path"] == "my_skills/architect/SKILL.md"
+        assert "Architecture Assessment" in architect["content"]
+        assert critic["success"] is True
+        assert critic["path"] == "my_skills/critic/SKILL.md"
+        assert "Verdict: APPROVE / REVISE / REJECT" in critic["content"]
+
     def test_plan_wrapper(self, mcp_server_e2e, _event_loop):
         server, _ = mcp_server_e2e
         result = _run_tool(
@@ -1582,6 +1358,11 @@ class TestE2ELearningTools:
         assert result["skill"] == "plan"
         assert "--consensus --interactive Review the MCP prompt-package migration" in result["invocation_message"]
         assert result["source"] == "my_skills/plan"
+        assert "Assume a pure MCP host does not have `AskUserQuestion`, `ask_codex`" in result["invocation_message"]
+        assert "Perform planner, analyst, architect, and critic work as sequential perspective passes" in result["invocation_message"]
+        assert "call the Hermes `ralph` MCP tool" in result["invocation_message"]
+        assert "`$team`" not in result["invocation_message"]
+        assert "`omx team`" not in result["invocation_message"]
 
     def test_autopilot_wrapper(self, mcp_server_e2e, _event_loop):
         server, _ = mcp_server_e2e
@@ -1609,6 +1390,10 @@ class TestE2ELearningTools:
         assert result["success"] is True
         assert result["skill"] == "ralph"
         assert "Finish the migration and verify it" in result["invocation_message"]
+        assert "Mandatory经验沉淀检查" in result["invocation_message"]
+        assert "memory_write" in result["invocation_message"]
+        assert "skill_create_or_patch" in result["invocation_message"]
+        assert "已检查，暂无可沉淀经验" in result["invocation_message"]
 
     def test_ralplan_wrapper(self, mcp_server_e2e, _event_loop):
         server, _ = mcp_server_e2e
@@ -1620,16 +1405,117 @@ class TestE2ELearningTools:
         assert result["success"] is True
         assert result["skill"] == "ralplan"
         assert "--interactive --deliberate Plan the MCP wrapper rollout" in result["invocation_message"]
-        assert "Strategic planning with optional interview workflow" in result["invocation_message"]
-        assert "You are Planner (Prometheus)." in result["invocation_message"]
-        assert "You are Architect (Oracle)." in result["invocation_message"]
-        assert "You are Critic." in result["invocation_message"]
-        assert result["included_assets"] == [
-            "my_skills/plan/SKILL.md",
-            "my_skills/ralplan/references/roles/planner.md",
-            "my_skills/ralplan/references/roles/architect.md",
-            "my_skills/ralplan/references/roles/critic.md",
+        assert "bundled_skill_read(name=\"planner\")" in result["invocation_message"]
+        assert "bundled_skill_read(name=\"architect\")" in result["invocation_message"]
+        assert "bundled_skill_read(name=\"critic\")" in result["invocation_message"]
+        assert "You are Planner (Prometheus)." not in result["invocation_message"]
+        assert "You are Architect (Oracle)." not in result["invocation_message"]
+        assert "You are Critic." not in result["invocation_message"]
+        assert "Assume the MCP host does **not** have `AskUserQuestion`, `ask_codex`" in result["invocation_message"]
+        assert "Do not call nonexistent Hermes MCP tools such as `AskUserQuestion`" in result["invocation_message"]
+        assert "call the Hermes `ralph` MCP tool" in result["invocation_message"]
+        assert "produce a plan Markdown document" in result["invocation_message"]
+        assert ".omx/plans/{task-slug}.md" in result["invocation_message"]
+        assert "# Current Approved Plan" in result["invocation_message"]
+        assert "## Current Priority Order" in result["invocation_message"]
+        assert "## Implementation Steps" in result["invocation_message"]
+        assert "## Ralph MCP Handoff" in result["invocation_message"]
+        assert ".omx/context/{slug}-*.md" in result["invocation_message"]
+        assert "The host agent continues with a clear, bounded plan in the same MCP-hosted" in result["invocation_message"]
+        assert "`team`" not in result["invocation_message"].split("--- BEGIN my_skills/plan/SKILL.md ---", 1)[0]
+        assert "`ultrawork`" not in result["invocation_message"].split("--- BEGIN my_skills/plan/SKILL.md ---", 1)[0]
+        assert result["recommended_path"] == "prompt_resource_tool"
+        assert result["prompt_name"] == "ralplan"
+        assert "included_assets" not in result
+        assert [item["name"] for item in result["required_bundled_skills"]] == [
+            "plan",
+            "planner",
+            "architect",
+            "critic",
         ]
+        assert all(item["fetch_tool"] == "bundled_skill_read" for item in result["required_bundled_skills"])
+
+    def test_ralplan_prompt(self, mcp_server_e2e, _event_loop):
+        server, _ = mcp_server_e2e
+        prompt = _render_prompt(
+            server,
+            "ralplan",
+            {"instruction": "Plan the MCP wrapper rollout", "interactive": True, "deliberate": True},
+        )
+        rendered = "\n".join(str(getattr(msg, "content", msg)) for msg in prompt)
+        assert "Assume the MCP host does **not** have `AskUserQuestion`, `ask_codex`" in rendered
+        assert "bundled_skill_read(name=\"planner\")" in rendered
+
+    def test_planning_session_save_and_resources(self, mcp_server_e2e, _event_loop):
+        server, _ = mcp_server_e2e
+        created = _run_tool(
+            server,
+            "planning_session_create",
+            {
+                "instruction": "Plan MCP wrapper rollout",
+                "mode": "ralplan",
+                "interactive": False,
+                "deliberate": True,
+            },
+        )
+        assert created["success"] is True
+        plan_id = created["plan_id"]
+        assert created["status"] == "draft"
+        assert created["storage_path_display"].endswith(f"/plan/sessions/{plan_id}/")
+        assert created["next_action"]["name"] == "ralplan"
+
+        saved = _run_tool(
+            server,
+            "planning_plan_save",
+            {
+                "plan_id": plan_id,
+                "markdown": "# Plan: MCP wrapper rollout\n\n## Acceptance Criteria\n- [ ] done\n",
+                "status": "review",
+                "iteration": 1,
+            },
+        )
+        assert saved["success"] is True
+        assert saved["status"] == "review"
+        assert saved["iteration"] == 1
+
+        metadata = json.loads(_read_resource(server, created["metadata_resource_uri"]))
+        assert metadata["plan_id"] == plan_id
+        assert metadata["status"] == "review"
+
+        plan_md = _read_resource(server, created["plan_resource_uri"])
+        assert "# Plan: MCP wrapper rollout" in plan_md
+
+        attached = _run_tool(
+            server,
+            "planning_context_attach",
+            {"plan_id": plan_id, "context_markdown": "# Context\n- fact", "snapshot_id": "initial-context"},
+        )
+        assert attached["success"] is True
+        ctx = _read_resource(server, attached["context_resource_uri"])
+        assert "# Context" in ctx
+
+        review = _run_tool(
+            server,
+            "planning_review_save",
+            {
+                "plan_id": plan_id,
+                "role": "critic",
+                "iteration": 1,
+                "markdown": "Verdict: APPROVE",
+                "verdict": "APPROVE",
+            },
+        )
+        assert review["success"] is True
+        assert review["latest_verdict"] == "APPROVE"
+        assert review["status"] == "approved"
+        review_md = _read_resource(server, review["review_resource_uri"])
+        assert "Verdict: APPROVE" in review_md
+
+        handoff = _run_tool(server, "planning_handoff_prepare", {"plan_id": plan_id, "target": "ralph"})
+        assert handoff["success"] is True
+        assert handoff["prompt_name"] == "ralph"
+        assert handoff["plan_resource_uri"] == created["plan_resource_uri"]
+        assert "Execute the approved plan" in handoff["handoff_summary"]
 
     def test_init_requires_mcp_roots_when_client_roots_are_unavailable(
         self,
