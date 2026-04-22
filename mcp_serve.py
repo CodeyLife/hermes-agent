@@ -672,6 +672,7 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
     def _structured_ralplan_runtime_note() -> str:
         return (
             "[Hermes MCP structured ralplan runtime]\n"
+            "- Do NOT call `plan_skill_read` as the next step; the full planning "
             "content is already in this invocation_message.\n"
             "- Hermes MCP does NOT maintain planning session state, plan files, "
             "review files, iteration counters, or handoff state for this flow.\n"
@@ -1490,3 +1491,35 @@ def run_mcp_server(verbose: bool = False) -> None:
         asyncio.run(_run())
     except KeyboardInterrupt:
         bridge.stop()
+
+
+def main(argv: Optional[List[str]] = None) -> None:
+    """Small MCP-only command entry point.
+
+    Supports both direct invocation (`hermes`) and the historical
+    `hermes mcp serve` shape used by existing MCP client configs.
+    """
+    args = list(sys.argv[1:] if argv is None else argv)
+    verbose = False
+
+    if args[:2] == ["mcp", "serve"]:
+        args = args[2:]
+    elif args[:1] == ["serve"]:
+        args = args[1:]
+
+    if "--verbose" in args:
+        verbose = True
+        args.remove("--verbose")
+
+    if args:
+        print(
+            "Usage: hermes [mcp] serve [--verbose]",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    run_mcp_server(verbose=verbose)
+
+
+if __name__ == "__main__":
+    main()

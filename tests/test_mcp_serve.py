@@ -1393,7 +1393,11 @@ class TestE2ELearningTools:
         )
         assert result["success"] is True
         assert result["skill"] == "deep-interview"
+        assert result["invocation_message"].startswith("[Runtime note:")
         assert "--deep --autoresearch I want a better planning workflow" in result["invocation_message"]
+        assert "`.omx/context/`, `.omx/interviews/`, and `.omx/specs/`" in result["invocation_message"]
+        assert ".herms/specs" not in result["invocation_message"]
+        assert ".hermes/specs" not in result["invocation_message"]
 
     def test_ralph_wrapper(self, mcp_server_e2e, _event_loop):
         server, _ = mcp_server_e2e

@@ -189,7 +189,23 @@ def deep_interview_invocation(
     if autoresearch:
         flags.append("--autoresearch")
     full_instruction = " ".join([*flags, instruction]).strip()
-    return build_bundled_skill_invocation("deep-interview", full_instruction)
+    runtime_note = (
+        "MCP host compatibility for deep-interview: Hermes MCP only returns this "
+        "prompt; it does not maintain interview files or search the host filesystem "
+        "for the workflow. Do NOT ask the host/user to search misspelled or legacy "
+        "Hermes-home specs directories. If the MCP host has file-write capability, store "
+        "deep-interview context, transcript, and spec artifacts under host-owned "
+        "`.omx/context/`, `.omx/interviews/`, and `.omx/specs/`; otherwise keep the "
+        "same artifacts in the conversation. If structured question tools are not "
+        "available in the MCP host, ask exactly one focused question per round in "
+        "normal chat."
+    )
+    return build_bundled_skill_invocation(
+        "deep-interview",
+        full_instruction,
+        runtime_note=runtime_note,
+        runtime_note_position="before",
+    )
 
 
 def ralph_invocation(instruction: str) -> Dict[str, Any]:

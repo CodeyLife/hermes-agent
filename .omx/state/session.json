@@ -1,7 +1,8 @@
 {
-  "session_id": "omx-1776819863803-uanewp",
-  "started_at": "2026-04-22T01:04:24.428Z",
+  "session_id": "019db480-373d-7b01-9c91-08e2701d96e8",
+  "native_session_id": "019db480-373d-7b01-9c91-08e2701d96e8",
+  "started_at": "2026-04-22T09:23:49.054Z",
   "cwd": "D:\\GithubProject\\hermes-agent",
-  "pid": 31500,
+  "pid": 39908,
   "platform": "win32"
 }

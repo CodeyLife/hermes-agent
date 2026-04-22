@@ -44,8 +44,8 @@ Most non-trivial software tasks require coordinated phases: understanding requir
 <Steps>
 0. **Pre-context Intake (required before Phase 0 starts)**:
    - Derive a task slug from the request.
-   - Load the latest relevant snapshot from `.hermes/context/{slug}-*.md` when available.
-   - If no snapshot exists, create `.hermes/context/{slug}-{timestamp}.md` (UTC `YYYYMMDDTHHMMSSZ`) with:
+   - Load the latest relevant snapshot from `.omx/context/{slug}-*.md` when available.
+   - If no snapshot exists, create `.omx/context/{slug}-{timestamp}.md` (UTC `YYYYMMDDTHHMMSSZ`) with:
      - Task statement
      - Desired outcome
      - Known facts/evidence
@@ -56,16 +56,16 @@ Most non-trivial software tasks require coordinated phases: understanding requir
    - Carry the snapshot path into autopilot artifacts/state so all phases share grounded context.
 
 1. **Phase 0 - Expansion**: Turn the user's idea into a detailed spec
-   - If `.hermes/specs/deep-interview-*.md` exists for this task: reuse it and skip redundant expansion work
+   - If `.omx/specs/deep-interview-*.md` exists for this task: reuse it and skip redundant expansion work
    - If prompt is highly vague: route to `$deep-interview` for Socratic ambiguity-gated clarification
    - Analyst (THOROUGH tier): Extract requirements
    - Architect (THOROUGH tier): Create technical specification
-   - Output: `.hermes/plans/autopilot-spec.md`
+   - Output: `.omx/plans/autopilot-spec.md`
 
 2. **Phase 1 - Planning**: Create an implementation plan from the spec
    - Architect (THOROUGH tier): Create plan (direct mode, no interview)
    - Critic (THOROUGH tier): Validate plan
-   - Output: `.hermes/plans/autopilot-impl.md`
+   - Output: `.omx/plans/autopilot-impl.md`
 
 3. **Phase 2 - Execution**: Implement the plan using Ralph + Ultrawork
    - LOW-tier executor/search roles: Simple tasks

@@ -30,12 +30,12 @@ Execution quality is usually bottlenecked by intent clarity, not just missing im
 - **Quick (`--quick`)**: fast pre-PRD pass; target threshold `<= 0.30`; max rounds 5
 - **Standard (`--standard`, default)**: full requirement interview; target threshold `<= 0.20`; max rounds 12
 - **Deep (`--deep`)**: high-rigor exploration; target threshold `<= 0.15`; max rounds 20
-- **Autoresearch (`--autoresearch`)**: same interview rigor as Standard, but specialized for `omx autoresearch` launch readiness and `.hermes/specs/` mission/sandbox artifact handoff
+- **Autoresearch (`--autoresearch`)**: same interview rigor as Standard, but specialized for `omx autoresearch` launch readiness and `.omx/specs/` mission/sandbox artifact handoff
 
 If no flag is provided, use **Standard**.
 
 <Mode_Flags>
-- **`--autoresearch`**: switch the interview into autoresearch-intake mode for `omx autoresearch` handoff. In this mode, the interview should converge on a launch-ready research mission, write canonical artifacts under `.hermes/specs/`, and preserve the explicit `refine further` vs `launch` boundary for downstream CLI intake.
+- **`--autoresearch`**: switch the interview into autoresearch-intake mode for `omx autoresearch` handoff. In this mode, the interview should converge on a launch-ready research mission, write canonical artifacts under `.omx/specs/`, and preserve the explicit `refine further` vs `launch` boundary for downstream CLI intake.
 </Mode_Flags>
 </Depth_Profiles>
 
@@ -64,7 +64,7 @@ If no flag is provided, use **Standard**.
 ## Phase 0: Preflight Context Intake
 
 1. Parse `{{ARGUMENTS}}` and derive a short task slug.
-2. Attempt to load the latest relevant context snapshot from `.hermes/context/{slug}-*.md`.
+2. Attempt to load the latest relevant context snapshot from `.omx/context/{slug}-*.md`.
 3. If no snapshot exists, create a minimum context snapshot with:
    - Task statement
    - Desired outcome
@@ -75,7 +75,7 @@ If no flag is provided, use **Standard**.
    - Unknowns/open questions
    - Decision-boundary unknowns
    - Likely codebase touchpoints
-4. Save snapshot to `.hermes/context/{slug}-{timestamp}.md` (UTC `YYYYMMDDTHHMMSSZ`) and reference it in mode state.
+4. Save snapshot to `.omx/context/{slug}-{timestamp}.md` (UTC `YYYYMMDDTHHMMSSZ`) and reference it in mode state.
 
 ## Phase 1: Initialize
 
@@ -102,7 +102,7 @@ If no flag is provided, use **Standard**.
     "codebase_context": null,
     "current_stage": "intent-first",
     "current_focus": "intent",
-    "context_snapshot_path": ".hermes/context/<slug>-<timestamp>.md"
+    "context_snapshot_path": ".omx/context/<slug>-<timestamp>.md"
   }
 }
 ```
@@ -193,10 +193,10 @@ Track used modes in state to prevent repetition.
 When threshold is met (or user exits with warning / hard cap):
 
 1. Write interview transcript summary to:
-   - `.hermes/interviews/{slug}-{timestamp}.md`  
+   - `.omx/interviews/{slug}-{timestamp}.md`  
      (kept for ralph PRD compatibility)
 2. Write execution-ready spec to:
-   - `.hermes/specs/deep-interview-{slug}.md`
+   - `.omx/specs/deep-interview-{slug}.md`
 
 Spec should include:
 - Metadata (profile, rounds, final ambiguity, threshold, context type)
@@ -221,16 +221,16 @@ When the clarified task is specifically about `omx autoresearch`, or the skill i
 
 - **Accepted seed inputs:** `topic`, `evaluator`, `keep-policy`, `slug`, existing mission draft text, and prior evaluator examples/templates
 - **Required interview focus:** mission clarity, evaluator readiness, keep policy, slug/session naming, and whether the draft is ready to launch now or should refine further
-- **Canonical artifact path:** `.hermes/specs/deep-interview-autoresearch-{slug}.md`
-- **Launch artifact bundle:** `.hermes/specs/autoresearch-{slug}/mission.md`, `.hermes/specs/autoresearch-{slug}/sandbox.md`, and `.hermes/specs/autoresearch-{slug}/result.json`
-- **Launch artifact directory:** `.hermes/specs/autoresearch-{slug}/`
+- **Canonical artifact path:** `.omx/specs/deep-interview-autoresearch-{slug}.md`
+- **Launch artifact bundle:** `.omx/specs/autoresearch-{slug}/mission.md`, `.omx/specs/autoresearch-{slug}/sandbox.md`, and `.omx/specs/autoresearch-{slug}/result.json`
+- **Launch artifact directory:** `.omx/specs/autoresearch-{slug}/`
 - **Required artifact sections:**
   - `Mission Draft`
   - `Evaluator Draft`
   - `Launch Readiness`
   - `Seed Inputs`
   - `Confirmation Bridge`
-- **Required launch artifacts under `.hermes/specs/autoresearch-{slug}/`:**
+- **Required launch artifacts under `.omx/specs/autoresearch-{slug}/`:**
   - `mission.md`
   - `sandbox.md`
   - `result.json`
@@ -244,16 +244,16 @@ When the clarified task is specifically about `omx autoresearch`, or the skill i
 Present execution options after artifact generation using explicit handoff contracts. Treat the deep-interview spec as the current requirements source of truth and preserve intent, non-goals, decision boundaries, acceptance criteria, and any residual-risk warnings across the handoff.
 
 ### 1. **`$ralplan` (Recommended)**
-- **Input Artifact:** `.hermes/specs/deep-interview-{slug}.md` (optionally accompanied by the transcript/context snapshot for traceability)
+- **Input Artifact:** `.omx/specs/deep-interview-{slug}.md` (optionally accompanied by the transcript/context snapshot for traceability)
 - **Invocation:** `$plan --consensus --direct <spec-path>`
 - **Consumer Behavior:** Treat the deep-interview spec as the requirements source of truth. Do not repeat the interview by default; refine architecture/feasibility around the clarified intent and boundaries instead.
 - **Skipped / Already-Satisfied Stages:** Requirements discovery, ambiguity clarification, and early intent-boundary elicitation
-- **Expected Output:** Canonical planning artifacts under `.hermes/plans/`, especially `prd-*.md` and `test-spec-*.md`
+- **Expected Output:** Canonical planning artifacts under `.omx/plans/`, especially `prd-*.md` and `test-spec-*.md`
 - **Best When:** Requirements are clear enough to stop interviewing, but architectural validation / consensus planning is still desirable
 - **Next Recommended Step:** Use the approved planning artifacts with `$autopilot`, `$ralph`, or `$team` depending on the desired execution style
 
 ### 2. **`$autopilot`**
-- **Input Artifact:** `.hermes/specs/deep-interview-{slug}.md`
+- **Input Artifact:** `.omx/specs/deep-interview-{slug}.md`
 - **Invocation:** `$autopilot <spec-path>`
 - **Consumer Behavior:** Use the deep-interview spec as the clarified execution brief. Preserve intent, non-goals, decision boundaries, and acceptance criteria as binding context for planning/execution.
 - **Skipped / Already-Satisfied Stages:** Initial requirement discovery and ambiguity reduction
@@ -262,7 +262,7 @@ Present execution options after artifact generation using explicit handoff contr
 - **Next Recommended Step:** Continue through autopilot's execution/QA/validation flow; if coordination-heavy execution emerges, prefer a follow-up `$team` or `$ralph` lane as appropriate
 
 ### 3. **`$ralph`**
-- **Input Artifact:** `.hermes/specs/deep-interview-{slug}.md`
+- **Input Artifact:** `.omx/specs/deep-interview-{slug}.md`
 - **Invocation:** `$ralph <spec-path>`
 - **Consumer Behavior:** Use the spec's acceptance criteria and boundary constraints as the persistence target. Do not reopen requirements discovery unless the user explicitly asks to refine further.
 - **Skipped / Already-Satisfied Stages:** Requirement interview, ambiguity clarification, and initial scope-definition work
@@ -271,7 +271,7 @@ Present execution options after artifact generation using explicit handoff contr
 - **Next Recommended Step:** Continue Ralph's persistence loop; if work expands into coordination-heavy lanes, hand off to `$team` and keep Ralph for verification continuity
 
 ### 4. **`$team`**
-- **Input Artifact:** `.hermes/specs/deep-interview-{slug}.md`
+- **Input Artifact:** `.omx/specs/deep-interview-{slug}.md`
 - **Invocation:** `$team <spec-path>`
 - **Consumer Behavior:** Treat the spec as shared execution context for coordinated parallel work. Preserve the clarified intent, non-goals, decision boundaries, and acceptance criteria as common lane constraints.
 - **Skipped / Already-Satisfied Stages:** Requirement clarification and early ambiguity reduction
@@ -299,8 +299,8 @@ Present execution options after artifact generation using explicit handoff contr
 - Use `request_user_input` / structured user-input tool for each interview round when available
 - If structured question tools are unavailable, use plain-text single-question rounds and keep the same stage order
 - Use `state_write` / `state_read` for resumable mode state
-- Read/write context snapshots under `.hermes/context/`
-- Save transcript/spec artifacts under `.hermes/interviews/` and `.hermes/specs/`
+- Read/write context snapshots under `.omx/context/`
+- Save transcript/spec artifacts under `.omx/interviews/` and `.omx/specs/`
 </Tool_Usage>
 
 <Escalation_And_Stop_Conditions>
@@ -311,15 +311,15 @@ Present execution options after artifact generation using explicit handoff contr
 </Escalation_And_Stop_Conditions>
 
 <Final_Checklist>
-- [ ] Preflight context snapshot exists under `.hermes/context/{slug}-{timestamp}.md`
+- [ ] Preflight context snapshot exists under `.omx/context/{slug}-{timestamp}.md`
 - [ ] Ambiguity score shown each round
 - [ ] Intent-first stage priority used before implementation detail
 - [ ] Weakest-dimension targeting used within the active stage
 - [ ] At least one explicit assumption probe happened before crystallization
 - [ ] At least one persistent follow-up / pressure pass deepened a prior answer
 - [ ] Challenge modes triggered at thresholds (when applicable)
-- [ ] Transcript written to `.hermes/interviews/{slug}-{timestamp}.md`
-- [ ] Spec written to `.hermes/specs/deep-interview-{slug}.md`
+- [ ] Transcript written to `.omx/interviews/{slug}-{timestamp}.md`
+- [ ] Spec written to `.omx/specs/deep-interview-{slug}.md`
 - [ ] Brownfield questions use evidence-backed confirmation when applicable
 - [ ] Handoff options provided (`$ralplan`, `$autopilot`, `$ralph`, `$team`)
 - [ ] No direct implementation performed in this mode
