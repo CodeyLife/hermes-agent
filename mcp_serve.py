@@ -672,7 +672,6 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
     def _structured_ralplan_runtime_note() -> str:
         return (
             "[Hermes MCP structured ralplan runtime]\n"
-            "- Do NOT call `plan_skill_read` as the next step; the ralplan skill "
             "content is already in this invocation_message.\n"
             "- Hermes MCP does NOT maintain planning session state, plan files, "
             "review files, iteration counters, or handoff state for this flow.\n"

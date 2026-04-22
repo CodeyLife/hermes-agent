@@ -80,10 +80,11 @@ For pure MCP hosts:
   with the approved plan summary to obtain a new `invocation_message`, then
   submit that message to the host agent.
 - Plan persistence is host-owned. The Hermes MCP `ralplan` tool itself does not
-  write `.omx/plans/` or any source files, but the workflow **must still
-  produce a plan Markdown document**. If the host can write files, save it as
-  `.omx/plans/{task-slug}.md`; otherwise output the same Markdown in chat under
-  `# Current Approved Plan`.
+  write plan files, review files, host project files, or source files. The workflow
+  **must still produce a plan Markdown document**. If the host can write files,
+  save it using host-owned storage; otherwise output the same Markdown in chat
+  under `# Current Approved Plan`. Do not assume Hermes MCP will create or
+  manage plan storage for the host.
 
 ### Required Plan Markdown Output
 
@@ -182,8 +183,9 @@ Follow the Plan skill's full documentation for consensus mode details.
 Before consensus planning or execution handoff, ensure a grounded context snapshot exists:
 
 1. Derive a task slug from the request.
-2. Reuse the latest relevant snapshot in `.omx/context/{slug}-*.md` when running under OMX.
-3. If none exists and the host has file-write capability, create `.omx/context/{slug}-{timestamp}.md` (UTC `YYYYMMDDTHHMMSSZ`) with:
+2. Reuse the latest relevant host-owned context snapshot when available.
+3. If none exists and the host has file-write capability, create a host-owned
+   context snapshot with:
    - task statement
    - desired outcome
    - known facts/evidence

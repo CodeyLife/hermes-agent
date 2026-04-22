@@ -1404,8 +1404,10 @@ class TestE2ELearningTools:
         assert result["next_action"]["arguments"]["interactive"] is True
         assert result["next_action"]["arguments"]["deliberate"] is True
         assert "invocation_message" in result
+        assert result["invocation_message"].startswith("[Runtime note:")
         assert "Do NOT call `plan_skill_read` as the next step" in result["invocation_message"]
         assert "Hermes MCP does NOT maintain planning session state" in result["invocation_message"]
+        assert "Do not assume Hermes MCP will create or\n  manage plan storage for the host." in result["invocation_message"]
         assert "call the Hermes MCP `ralph` tool itself" in result["invocation_message"]
         assert result["legacy_tool"] == "ralplan_legacy"
         assert result["host_state_required"] is True
@@ -1431,12 +1433,12 @@ class TestE2ELearningTools:
         assert "Do not call nonexistent Hermes MCP tools such as `AskUserQuestion`" in result["invocation_message"]
         assert "call the Hermes `ralph` MCP tool" in result["invocation_message"]
         assert "produce a plan Markdown document" in result["invocation_message"]
-        assert ".omx/plans/{task-slug}.md" in result["invocation_message"]
+        assert "Do not assume Hermes MCP will create or" in result["invocation_message"]
         assert "# Current Approved Plan" in result["invocation_message"]
         assert "## Current Priority Order" in result["invocation_message"]
         assert "## Implementation Steps" in result["invocation_message"]
         assert "## Ralph MCP Handoff" in result["invocation_message"]
-        assert ".omx/context/{slug}-*.md" in result["invocation_message"]
+        assert "host-owned context snapshot" in result["invocation_message"]
         assert "The host agent continues with a clear, bounded plan in the same MCP-hosted" in result["invocation_message"]
         assert "`team`" not in result["invocation_message"].split("--- BEGIN my_skills/plan/SKILL.md ---", 1)[0]
         assert "`ultrawork`" not in result["invocation_message"].split("--- BEGIN my_skills/plan/SKILL.md ---", 1)[0]

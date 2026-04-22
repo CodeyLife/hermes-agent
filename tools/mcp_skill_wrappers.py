@@ -78,6 +78,7 @@ def build_bundled_skill_invocation(
     instruction: str = "",
     *,
     runtime_note: str = "",
+    runtime_note_position: str = "after",
 ) -> Dict[str, Any]:
     """Build a structured MCP result for invoking a bundled Hermes skill.
 
@@ -100,8 +101,10 @@ def build_bundled_skill_invocation(
         skill_dir,
         activation_note,
         user_instruction=instruction,
-        runtime_note=runtime_note,
+        runtime_note="" if runtime_note_position == "before" else runtime_note,
     )
+    if runtime_note and runtime_note_position == "before":
+        invocation_message = f"[Runtime note: {runtime_note}]\n\n{invocation_message}"
 
     return {
         "success": True,
@@ -235,5 +238,10 @@ def ralplan_invocation(
     if deliberate:
         flags.append("--deliberate")
     full_instruction = " ".join([*flags, instruction]).strip()
-    result = build_bundled_skill_invocation("ralplan", full_instruction, runtime_note=runtime_note)
+    result = build_bundled_skill_invocation(
+        "ralplan",
+        full_instruction,
+        runtime_note=runtime_note,
+        runtime_note_position="before" if runtime_note else "after",
+    )
     return _append_required_skill_manifest(result, RALPLAN_REQUIRED_SKILLS)
