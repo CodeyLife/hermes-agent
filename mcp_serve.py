@@ -970,16 +970,25 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
             from tools.skills_tool import local_skill_view_safe
             from tools.skill_manager_tool import skill_create_or_patch_v1
 
+            # Some MCP hosts map the patch replacement payload to `content`
+            # because `content` is already used for create/edit-style writes.
+            # Preserve the public MCP schema while accepting that legacy/host
+            # shape as an alias for `new_string` on patch only.  Keep an
+            # explicit empty `new_string` untouched so deletion still works.
+            effective_new_string = new_string
+            if action == "patch" and effective_new_string is None and content is not None:
+                effective_new_string = content
+
             gate_action = action
             gate_content = content
             if action == "patch":
                 viewed = local_skill_view_safe(name=name)
                 existing_content = viewed.get("content") if viewed.get("success") else None
-                if isinstance(existing_content, str) and old_string is not None and new_string is not None:
+                if isinstance(existing_content, str) and old_string is not None and effective_new_string is not None:
                     projected_content, _match_count, _strategy, match_error = fuzzy_find_and_replace(
                         existing_content,
                         old_string,
-                        new_string,
+                        effective_new_string,
                         replace_all,
                     )
                     if not match_error:
@@ -991,7 +1000,7 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
                 name=name,
                 content=gate_content,
                 old_string=old_string,
-                new_string=new_string,
+                new_string=effective_new_string,
                 file_content=None,
             )
             if not should_allow_write(quality_gate):
@@ -1007,7 +1016,7 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
                 content=content,
                 category=category,
                 old_string=old_string,
-                new_string=new_string,
+                new_string=effective_new_string,
                 replace_all=replace_all,
             )
             try:

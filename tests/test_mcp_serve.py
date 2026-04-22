@@ -827,6 +827,23 @@ class TestE2ELearningTools:
         assert patch["success"] is True
         assert patch["quality_gate"]["decision"] in {"pass", "warn"}
 
+        content_alias_patch = _run_tool(
+            server,
+            "skill_create_or_patch",
+            {
+                "action": "patch",
+                "name": "new-skill",
+                "old_string": "Patched skill.",
+                "content": "Content alias skill.",
+            },
+        )
+        assert content_alias_patch["success"] is True
+        assert content_alias_patch["quality_gate"]["decision"] in {"pass", "warn"}
+
+        viewed = _run_tool(server, "skill_view_safe", {"name": "new-skill"})
+        assert viewed["success"] is True
+        assert "Content alias skill." in viewed["content"]
+
         forbidden = _run_tool(
             server,
             "skill_create_or_patch",
